@@ -1,0 +1,17 @@
+[Unit]
+Description=tug.sh Stateless Agent
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/tug
+Restart=always
+RestartSec=3
+EnvironmentFile=/etc/tug/agent.env
+NoNewPrivileges=true
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
