@@ -15,7 +15,7 @@ import (
 
 type DockerManager struct{}
 
-const defaultTugRouterImage = "ghcr.io/tug-sh/tug-router:latest"
+const defaultTugRouterImage = "caddy:2"
 
 type tugRouterRoute struct {
 	Domain            string `json:"domain"`
@@ -95,7 +95,7 @@ func (d *DockerManager) ListContainers(ctx context.Context) ([]HandshakeContaine
 		"ps",
 		"-a",
 		"--format",
-		"{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}\t{{.Networks}}\t{{.Label \"com.docker.compose.project\"}}",
+		"{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}\t{{.Networks}}\t{{.Label \"com.docker.compose.project\"}}\t{{.Label \"tug.app\"}}",
 	)
 	output, err := cmd.Output()
 	if err != nil {
@@ -114,7 +114,7 @@ func (d *DockerManager) ListContainers(ctx context.Context) ([]HandshakeContaine
 			continue
 		}
 		parts := strings.Split(line, "\t")
-		if len(parts) < 7 {
+		if len(parts) < 8 {
 			continue
 		}
 		containerID := strings.TrimSpace(parts[0])
@@ -127,6 +127,7 @@ func (d *DockerManager) ListContainers(ctx context.Context) ([]HandshakeContaine
 			Status:      normalizeContainerStatus(parts[4]),
 			Networks:    splitCSV(parts[5]),
 			ProjectID:   strings.TrimSpace(parts[6]),
+			App:         strings.TrimSpace(parts[7]),
 			LogsPreview: logsPreview,
 		})
 	}

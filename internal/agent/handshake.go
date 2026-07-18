@@ -3,6 +3,7 @@ package agent
 type HandshakeContainer struct {
 	ID          string   `json:"id"`
 	ProjectID   string   `json:"project_id"`
+	App         string   `json:"app,omitempty"`
 	Name        string   `json:"name"`
 	Image       string   `json:"image"`
 	Ports       string   `json:"ports"`
