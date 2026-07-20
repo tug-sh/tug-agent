@@ -605,6 +605,40 @@ func (r *Runtime) executeCommand(
 			return logs, removeErr
 		}
 		return logs, nil
+	case "check_host_path":
+		if command.FilePath == "" {
+			return nil, fmt.Errorf("file_path is required")
+		}
+		info, err := os.Stat(command.FilePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				type pathInfo struct {
+					Exists bool `json:"exists"`
+					IsDir  bool `json:"is_dir"`
+				}
+				raw, _ := json.Marshal(pathInfo{Exists: false, IsDir: false})
+				*payloadOut = json.RawMessage(raw)
+				return []string{"Path does not exist: " + command.FilePath}, nil
+			}
+			return nil, fmt.Errorf("path access error: %w", err)
+		}
+		type pathInfo struct {
+			Exists bool `json:"exists"`
+			IsDir  bool `json:"is_dir"`
+		}
+		raw, _ := json.Marshal(pathInfo{Exists: true, IsDir: info.IsDir()})
+		*payloadOut = json.RawMessage(raw)
+		return []string{"Checked path: " + command.FilePath}, nil
+	case "get_container_mounts":
+		if command.ContainerID == "" {
+			return nil, fmt.Errorf("container_id is required")
+		}
+		out, err := exec.CommandContext(ctx, "docker", "inspect", "--format={{json .Mounts}}", command.ContainerID).Output()
+		if err != nil {
+			return nil, fmt.Errorf("docker inspect failed: %w", err)
+		}
+		*payloadOut = json.RawMessage(out)
+		return []string{"Fetched container mounts for " + command.ContainerID}, nil
 	default:
 		return nil, nil
 	}
