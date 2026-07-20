@@ -170,11 +170,15 @@ func writeAgentEnv(path string, cfg config.Config, token string) error {
 		return fmt.Errorf("cannot create environment directory: %w", err)
 	}
 
-	content := strings.Join([]string{
+	lines := []string{
 		fmt.Sprintf("TUG_AGENT_TOKEN=%s", token),
-		fmt.Sprintf("TUG_API_WS_URL=%s", cfg.APIWebSocketURL),
-		"",
-	}, "\n")
+	}
+	if cfg.APIWebSocketURL != "wss://api.tug.sh/ws/agents" {
+		lines = append(lines, fmt.Sprintf("TUG_API_WS_URL=%s", cfg.APIWebSocketURL))
+	}
+	lines = append(lines, "")
+
+	content := strings.Join(lines, "\n")
 
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		return fmt.Errorf("cannot write environment file: %w", err)

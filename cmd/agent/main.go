@@ -245,15 +245,14 @@ func clearAgentConnectionState(cfg config.Config) error {
 	if strings.TrimSpace(cfg.AgentEnvPath) == "" {
 		return fmt.Errorf("empty agent env path")
 	}
-	apiWS := strings.TrimSpace(cfg.APIWebSocketURL)
-	if apiWS == "" {
-		apiWS = "wss://api.tug.sh/ws/agents"
-	}
-	content := strings.Join([]string{
+	lines := []string{
 		"TUG_AGENT_TOKEN=",
-		fmt.Sprintf("TUG_API_WS_URL=%s", apiWS),
-		"",
-	}, "\n")
+	}
+	if cfg.APIWebSocketURL != "wss://api.tug.sh/ws/agents" {
+		lines = append(lines, fmt.Sprintf("TUG_API_WS_URL=%s", cfg.APIWebSocketURL))
+	}
+	lines = append(lines, "")
+	content := strings.Join(lines, "\n")
 	return os.WriteFile(cfg.AgentEnvPath, []byte(content), 0o600)
 }
 
