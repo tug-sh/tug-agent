@@ -17,7 +17,7 @@ type Config struct {
 	Verbose         bool
 }
 
-const defaultAgentVersion = "0.1.0"
+const defaultAgentVersion = "1.0.0"
 
 func Load() Config {
 	agentToken := envOrDefault("TUG_AGENT_TOKEN", "")
@@ -27,7 +27,7 @@ func Load() Config {
 		serverID = envOrDefault("TUG_SERVER_ID", "")
 	}
 	return Config{
-		AgentVersion:    defaultAgentVersion,
+		AgentVersion:    envOrDefault("TUG_AGENT_VERSION", defaultAgentVersion),
 		ServerID:        serverID,
 		WorkspaceID:     "",
 		AgentToken:      agentToken,
