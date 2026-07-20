@@ -112,8 +112,8 @@ sequenceDiagram
 
     Note over U, AG: 3. Real-time Streams (Terminal/Logs)
     U->>API: Upgrade HTTP to WS (Terminal Connect)
-    API<->>AG: Bidirectional WS Proxy Tunnel
-    AG<->>D: Stream PTY / Container Logs
+    API->>AG: Establish Bidirectional WS Proxy Tunnel
+    AG->>D: Stream PTY / Container Logs
 ```
 
 Happy coding! 🚢
