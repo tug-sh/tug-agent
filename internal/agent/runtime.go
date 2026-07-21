@@ -115,9 +115,8 @@ func (r *Runtime) Run(ctx context.Context) error {
 		}
 
 		if burstIndex >= len(retryPlan) {
-			log.Printf("connection retry plan exhausted; agent will stay idle until restart")
-			<-ctx.Done()
-			return nil
+			// Instead of giving up, repeat the last wave indefinitely
+			burstIndex = len(retryPlan) - 1
 		}
 
 		currentBurst := retryPlan[burstIndex]
@@ -148,8 +147,16 @@ func (r *Runtime) Run(ctx context.Context) error {
 			log.Printf("connection closed: %v", err)
 			if isNonRetriable(err) {
 				r.logReconnectRecoveryHint(err)
-				<-ctx.Done()
-				return nil
+				log.Printf("auth/config error; cooling down for 5 minutes before retrying...")
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-time.After(5 * time.Minute):
+				}
+				// Reset burst to try connecting from scratch
+				burstIndex = 0
+				attemptInBurst = 0
+				continue
 			}
 		}
 		if connected {

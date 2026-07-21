@@ -26,8 +26,11 @@ func (u *Updater) SafeUpdate(ctx context.Context, binaryURL string) error {
 	}
 	defer response.Body.Close()
 
-	nextBinary := "/usr/local/bin/tug.next"
-	currentBinary := "/usr/local/bin/tug"
+	currentBinary, err := os.Executable()
+	if err != nil {
+		currentBinary = "/usr/local/bin/tug-agent" // Safe fallback
+	}
+	nextBinary := currentBinary + ".next"
 
 	payload, err := ioReadAll(response.Body)
 	if err != nil {

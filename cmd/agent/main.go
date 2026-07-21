@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -29,14 +30,29 @@ func main() {
 	stopMode := flag.Bool("stop", false, "Stop agent service")
 	disconnectMode := flag.Bool("disconnect", false, "Disconnect agent from dashboard")
 	removeMode := flag.Bool("remove", false, "Uninstall agent and remove service")
+	updateMode := flag.Bool("update", false, "Update agent binary to the latest version")
+	testMode := flag.Bool("test-mode", false, "Run in test mode for updater health check")
 	verbose := flag.Bool("verbose", true, "Enable verbose operation logs")
 	flag.Parse()
+
+	if *testMode {
+		fmt.Println("health-check: ok")
+		return
+	}
 
 	if err := loadAgentEnvFile(); err != nil {
 		log.Fatalf("failed to load environment file: %v", err)
 	}
 
 	cfg := config.Load()
+	if *updateMode || hasCommand(flag.Args(), "update") {
+		if err := runUpdate(cfg); err != nil {
+			log.Fatalf("update failed: %v", err)
+		}
+		fmt.Println("Agent updated successfully and restarted.")
+		return
+	}
+
 	if *initMode || hasCommand(flag.Args(), "init") {
 		if err := runInit(cfg); err != nil {
 			log.Fatalf("init failed: %v", err)
@@ -333,4 +349,19 @@ func acquireSingleInstanceLock() (func(), error) {
 	}
 
 	return release, nil
+}
+
+func runUpdate(cfg config.Config) error {
+	baseURL := cfg.APIWebSocketURL
+	baseURL = strings.Replace(baseURL, "wss://", "https://", 1)
+	baseURL = strings.Replace(baseURL, "ws://", "http://", 1)
+	if idx := strings.Index(baseURL, "/ws/"); idx != -1 {
+		baseURL = baseURL[:idx]
+	}
+	binaryName := fmt.Sprintf("agent-%s-%s", runtime.GOOS, runtime.GOARCH)
+	binaryURL := fmt.Sprintf("%s/releases/%s", baseURL, binaryName)
+
+	fmt.Printf("Updating agent from: %s\n", binaryURL)
+	updater := agent.NewUpdater()
+	return updater.SafeUpdate(context.Background(), binaryURL)
 }
