@@ -325,6 +325,7 @@ type inboundCommand struct {
 	Summary              string `json:"summary"`
 	ConfigID             string `json:"config_id"`
 	ProjectID            string `json:"project_id"`
+	ComposeContent       string `json:"compose_content,omitempty"`
 	RepoURL              string `json:"repo_url"`
 	Branch               string `json:"branch"`
 	FilePath             string `json:"file_path"`
@@ -519,6 +520,11 @@ func (r *Runtime) executeCommand(
 		composePath, err := ResolveSandboxPath(filepath.Join("projects", command.ProjectID, "docker-compose.yml"))
 		if err != nil {
 			return nil, err
+		}
+		if strings.TrimSpace(command.ComposeContent) != "" {
+			if err := os.MkdirAll(filepath.Dir(composePath), 0755); err == nil {
+				_ = os.WriteFile(composePath, []byte(command.ComposeContent), 0644)
+			}
 		}
 		deployCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
