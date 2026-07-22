@@ -89,6 +89,14 @@ func (d *DockerManager) StreamEvents(ctx context.Context, onEvent func(raw []byt
 }
 
 func (d *DockerManager) ListContainers(ctx context.Context) ([]HandshakeContainer, error) {
+	return d.listContainers(ctx, true)
+}
+
+func (d *DockerManager) ListContainersLite(ctx context.Context) ([]HandshakeContainer, error) {
+	return d.listContainers(ctx, false)
+}
+
+func (d *DockerManager) listContainers(ctx context.Context, includeLogsPreview bool) ([]HandshakeContainer, error) {
 	cmd := exec.CommandContext(
 		ctx,
 		"docker",
@@ -118,7 +126,10 @@ func (d *DockerManager) ListContainers(ctx context.Context) ([]HandshakeContaine
 			continue
 		}
 		containerID := strings.TrimSpace(parts[0])
-		logsPreview, _ := d.GetLogsPreview(ctx, containerID, 20)
+		logsPreview := []string{}
+		if includeLogsPreview {
+			logsPreview, _ = d.GetLogsPreview(ctx, containerID, 20)
+		}
 		containers = append(containers, HandshakeContainer{
 			ID:          containerID,
 			Name:        strings.TrimSpace(parts[1]),
@@ -192,7 +203,7 @@ func (d *DockerManager) ControlContainer(
 		}
 		args = append(args, containerID)
 	}
-	
+
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("docker %s failed: %s: %w", action, string(output), err)
@@ -221,7 +232,7 @@ func (d *DockerManager) DeployCompose(ctx context.Context, composePath string, c
 		logLines = append(logLines, fmt.Sprintf("Command: %s -f %s up -d", composeCommand, composePath))
 	}
 	cmd.Dir = sandboxDir
-	
+
 	output, err := cmd.CombinedOutput()
 	outputText := strings.TrimSpace(string(output))
 	if outputText != "" {

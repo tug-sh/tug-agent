@@ -8,9 +8,11 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
+	"golang.org/x/term"
 )
 
 type TerminalSession struct {
@@ -28,32 +30,63 @@ func (r *Runtime) handleTerminalCommand(ctx context.Context, conn *websocket.Con
 
 	switch cmd.Type {
 	case "terminal_start":
-		if cmd.TerminalID == "" || cmd.TargetContainerName == "" {
-			return fmt.Errorf("terminal_id and target_container_name are required")
+		target := cmd.TargetContainerName
+		if target == "" {
+			target = cmd.TargetContainerID
+		}
+		if cmd.TerminalID == "" || target == "" {
+			return fmt.Errorf("terminal_id and target_container_name/target_container_id are required")
 		}
 		
 		if _, exists := r.terminals[cmd.TerminalID]; exists {
 			return fmt.Errorf("terminal session already exists")
 		}
 
-		c := exec.Command("docker", "exec", "-it", cmd.TargetContainerName, "/bin/sh")
-		
-		ptmx, err := pty.Start(c)
-		if err != nil {
-			return fmt.Errorf("failed to start pty: %w", err)
+		// Try bash first, fall back to sh.
+		shell := "/bin/bash"
+		checkCmd := exec.Command("docker", "exec", target, "/bin/bash", "-c", "exit 0")
+		if checkCmd.Run() != nil {
+			shell = "/bin/sh"
 		}
 
-		// Initial resize if provided
-		if cmd.Rows > 0 && cmd.Cols > 0 {
-			_ = pty.Setsize(ptmx, &pty.Winsize{
-				Rows: cmd.Rows,
-				Cols: cmd.Cols,
-			})
+		// Open PTY pair explicitly so we can configure the slave before the
+		// child starts. pty.Start only exposes the master, and calling
+		// term.MakeRaw on the master has no effect on macOS because the
+		// master has no line discipline — it must be called on the slave.
+		ptmx, pts, openErr := pty.Open()
+		if openErr != nil {
+			return fmt.Errorf("failed to open pty: %w", openErr)
 		}
+
+		// Initial size.
+		if cmd.Rows > 0 && cmd.Cols > 0 {
+			_ = pty.Setsize(ptmx, &pty.Winsize{Rows: cmd.Rows, Cols: cmd.Cols})
+		}
+
+		// Disable echo on the slave side BEFORE the child inherits it.
+		// The container shell (via docker exec -t) echoes characters itself
+		// through readline; the host PTY must not add a second echo.
+		if _, rawErr := term.MakeRaw(int(pts.Fd())); rawErr != nil {
+			log.Printf("terminal: could not disable pty echo: %v", rawErr)
+		}
+
+		c := exec.Command("docker", "exec", "-it", target, shell)
+		c.Stdin = pts
+		c.Stdout = pts
+		c.Stderr = pts
+		c.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
+
+		if err := c.Start(); err != nil {
+			_ = ptmx.Close()
+			_ = pts.Close()
+			return fmt.Errorf("failed to start pty: %w", err)
+		}
+		// Slave is now owned by the child; close the parent's copy.
+		_ = pts.Close()
 
 		session := &TerminalSession{
 			ID:        cmd.TerminalID,
-			Container: cmd.TargetContainerName,
+			Container: target,
 			Cmd:       c,
 			PTY:       ptmx,
 		}

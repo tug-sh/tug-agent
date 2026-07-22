@@ -111,11 +111,17 @@ func main() {
 	defer releaseLock()
 	if cfg.Verbose {
 		log.Printf(
-			"agent verbose enabled: server_id=%s workspace_id=%s ws_url=%s env_path=%s",
+			"agent verbose enabled: server_id=%s workspace_id=%s ws_url=%s env_path=%s profile=%s heartbeat=%s self_heal=%s reconnect_base=%s reconnect_max=%s jitter_pct=%d",
 			cfg.ServerID,
 			cfg.WorkspaceID,
 			cfg.APIWebSocketURL,
 			cfg.AgentEnvPath,
+			cfg.TrafficProfile,
+			cfg.HeartbeatInterval,
+			cfg.SelfHealInterval,
+			cfg.ReconnectBaseDelay,
+			cfg.ReconnectMaxDelay,
+			cfg.ReconnectJitterPct,
 		)
 	}
 
