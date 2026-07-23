@@ -183,6 +183,9 @@ func (r *Runtime) connectAndServe(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("websocket dial failed: %w", err)
 	}
 	defer conn.Close()
+	// Terminal sessions are bound to this connection's lifetime. When it ends,
+	// kill their shells so they don't leak or duplicate output after reconnect.
+	defer r.closeAllTerminals()
 	r.debugf("websocket connected")
 	sessionStartedAt := time.Now()
 
@@ -731,7 +734,7 @@ func (r *Runtime) executeCommand(
 	payloadOut *json.RawMessage,
 ) ([]string, error) {
 	switch command.Type {
-	case "terminal_start", "terminal_input", "terminal_resize":
+	case "terminal_start", "terminal_input", "terminal_resize", "terminal_stop":
 		return nil, r.handleTerminalCommand(ctx, conn, command)
 	case "git_deploy":
 		return r.handleGitDeploy(ctx, command)

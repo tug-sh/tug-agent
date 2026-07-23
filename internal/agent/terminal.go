@@ -8,11 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"sync"
-	"syscall"
 
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
-	"golang.org/x/term"
 )
 
 type TerminalSession struct {
@@ -49,40 +47,20 @@ func (r *Runtime) handleTerminalCommand(ctx context.Context, conn *websocket.Con
 			shell = "/bin/sh"
 		}
 
-		// Open PTY pair explicitly so we can configure the slave before the
-		// child starts. pty.Start only exposes the master, and calling
-		// term.MakeRaw on the master has no effect on macOS because the
-		// master has no line discipline — it must be called on the slave.
-		ptmx, pts, openErr := pty.Open()
-		if openErr != nil {
-			return fmt.Errorf("failed to open pty: %w", openErr)
+		// docker exec -it negotiates TTY raw-mode itself: the docker client puts
+		// the host side into raw mode so only the container shell echoes input.
+		// pty.Start handles the controlling-terminal setup correctly — do NOT add
+		// manual MakeRaw here, or input/output gets echoed twice.
+		c := exec.Command("docker", "exec", "-it", target, shell)
+		ptmx, err := pty.Start(c)
+		if err != nil {
+			return fmt.Errorf("failed to start pty: %w", err)
 		}
 
-		// Initial size.
+		// Initial resize if provided.
 		if cmd.Rows > 0 && cmd.Cols > 0 {
 			_ = pty.Setsize(ptmx, &pty.Winsize{Rows: cmd.Rows, Cols: cmd.Cols})
 		}
-
-		// Disable echo on the slave side BEFORE the child inherits it.
-		// The container shell (via docker exec -t) echoes characters itself
-		// through readline; the host PTY must not add a second echo.
-		if _, rawErr := term.MakeRaw(int(pts.Fd())); rawErr != nil {
-			log.Printf("terminal: could not disable pty echo: %v", rawErr)
-		}
-
-		c := exec.Command("docker", "exec", "-it", target, shell)
-		c.Stdin = pts
-		c.Stdout = pts
-		c.Stderr = pts
-		c.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
-
-		if err := c.Start(); err != nil {
-			_ = ptmx.Close()
-			_ = pts.Close()
-			return fmt.Errorf("failed to start pty: %w", err)
-		}
-		// Slave is now owned by the child; close the parent's copy.
-		_ = pts.Close()
 
 		session := &TerminalSession{
 			ID:        cmd.TerminalID,
@@ -162,7 +140,50 @@ func (r *Runtime) handleTerminalCommand(ctx context.Context, conn *websocket.Con
 		}
 		return nil
 
+	case "terminal_stop":
+		session, ok := r.terminals[cmd.TerminalID]
+		if !ok {
+			// Already gone — treat as success so the client can proceed.
+			return nil
+		}
+		delete(r.terminals, cmd.TerminalID)
+		session.close()
+		return nil
+
 	default:
 		return fmt.Errorf("unknown terminal command %s", cmd.Type)
+	}
+}
+
+// close terminates the underlying shell process and PTY. Safe to call multiple times.
+func (s *TerminalSession) close() {
+	s.WriteMu.Lock()
+	defer s.WriteMu.Unlock()
+	if s.Closed {
+		return
+	}
+	s.Closed = true
+	if s.PTY != nil {
+		_ = s.PTY.Close()
+	}
+	if s.Cmd != nil && s.Cmd.Process != nil {
+		_ = s.Cmd.Process.Kill()
+	}
+}
+
+// closeAllTerminals tears down every active terminal session. Called when the
+// agent's websocket connection ends, because each session's output loop is
+// bound to that connection — leaving them alive would orphan shell processes
+// inside containers and cause duplicated output on reconnect.
+func (r *Runtime) closeAllTerminals() {
+	r.termMu.Lock()
+	sessions := make([]*TerminalSession, 0, len(r.terminals))
+	for id, session := range r.terminals {
+		sessions = append(sessions, session)
+		delete(r.terminals, id)
+	}
+	r.termMu.Unlock()
+	for _, session := range sessions {
+		session.close()
 	}
 }
