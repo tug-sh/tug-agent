@@ -1075,6 +1075,26 @@ func (r *Runtime) executeCommand(
 		}
 		*payloadOut = json.RawMessage(out)
 		return []string{"Fetched container mounts for " + command.ContainerID}, nil
+	case "container_inspect":
+		if command.ContainerID == "" {
+			return nil, fmt.Errorf("container_id is required")
+		}
+		// Full effective config of what is actually running on the VPS. This is
+		// the authoritative source for the Docker config wizard (read-first), so
+		// generated compose never silently overwrites live settings.
+		out, err := exec.CommandContext(ctx, "docker", "inspect", command.ContainerID).Output()
+		if err != nil {
+			return nil, fmt.Errorf("docker inspect failed: %w", err)
+		}
+		// docker inspect returns a JSON array; forward the single element so the
+		// client receives one object.
+		var arr []json.RawMessage
+		if unmarshalErr := json.Unmarshal(out, &arr); unmarshalErr == nil && len(arr) > 0 {
+			*payloadOut = arr[0]
+		} else {
+			*payloadOut = json.RawMessage(out)
+		}
+		return []string{"Inspected container " + command.ContainerID}, nil
 	default:
 		return nil, nil
 	}
