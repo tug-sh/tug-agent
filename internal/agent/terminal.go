@@ -49,9 +49,8 @@ func (r *Runtime) handleTerminalCommand(ctx context.Context, conn *websocket.Con
 
 		// docker exec -it negotiates TTY raw-mode itself: the docker client puts
 		// the host side into raw mode so only the container shell echoes input.
-		// pty.Start handles the controlling-terminal setup correctly — do NOT add
-		// manual MakeRaw here, or input/output gets echoed twice.
-		c := exec.Command("docker", "exec", "-it", target, shell)
+		// Pass TERM=xterm-256color & COLORTERM=truecolor to enable rich ANSI color output.
+		c := exec.Command("docker", "exec", "-it", "-e", "TERM=xterm-256color", "-e", "COLORTERM=truecolor", target, shell)
 		ptmx, err := pty.Start(c)
 		if err != nil {
 			return fmt.Errorf("failed to start pty: %w", err)
