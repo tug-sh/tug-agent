@@ -259,27 +259,29 @@ func (r *Runtime) connectAndServe(ctx context.Context) (bool, error) {
 			log.Printf("invalid command payload: %v", err)
 			continue
 		}
-		r.debugf("received command: type=%s", command.Type)
-		var payload json.RawMessage
-		logs, err := r.executeCommand(ctx, conn, command, &payload)
-		if command.CommandID != "" {
-			result := outboundCommandResult{
-				Type:      "command_result",
-				CommandID: command.CommandID,
-				Success:   err == nil,
-				Logs:      logs,
-				Payload:   payload,
+		r.debugf("received command: type=%s command_id=%s", command.Type, command.CommandID)
+		go func(cmd inboundCommand) {
+			var payload json.RawMessage
+			logs, err := r.executeCommand(ctx, conn, cmd, &payload)
+			if cmd.CommandID != "" {
+				result := outboundCommandResult{
+					Type:      "command_result",
+					CommandID: cmd.CommandID,
+					Success:   err == nil,
+					Logs:      logs,
+					Payload:   payload,
+				}
+				if err != nil {
+					result.Error = err.Error()
+				}
+				if writeErr := r.writeJSON(conn, result); writeErr != nil {
+					log.Printf("cannot send command result for command_id=%s: %v", cmd.CommandID, writeErr)
+				}
 			}
 			if err != nil {
-				result.Error = err.Error()
+				log.Printf("command %s (id=%s) failed: %v", cmd.Type, cmd.CommandID, err)
 			}
-			if writeErr := r.writeJSON(conn, result); writeErr != nil {
-				log.Printf("cannot send command result: %v", writeErr)
-			}
-		}
-		if err != nil {
-			log.Printf("command %s failed: %v", command.Type, err)
-		}
+		}(command)
 	}
 }
 
@@ -736,6 +738,34 @@ func (r *Runtime) executeCommand(
 	switch command.Type {
 	case "terminal_start", "terminal_input", "terminal_resize", "terminal_stop":
 		return nil, r.handleTerminalCommand(ctx, conn, command)
+	case "run_cron_task", "exec_command":
+		cmdStr := strings.TrimSpace(command.Command)
+		if cmdStr == "" {
+			return nil, fmt.Errorf("command is required")
+		}
+		execCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+		defer cancel()
+		outCmd := exec.CommandContext(execCtx, "sh", "-c", cmdStr)
+		outBytes, execErr := outCmd.CombinedOutput()
+		outputStr := string(outBytes)
+		if strings.TrimSpace(outputStr) == "" {
+			if execErr != nil {
+				outputStr = fmt.Sprintf("Command failed: %v", execErr)
+			} else {
+				outputStr = "Command executed cleanly (no output)."
+			}
+		}
+		exitCode := 0
+		if outCmd.ProcessState != nil {
+			exitCode = outCmd.ProcessState.ExitCode()
+		}
+		if raw, marshalErr := json.Marshal(map[string]any{
+			"output":    outputStr,
+			"exit_code": exitCode,
+		}); marshalErr == nil {
+			*payloadOut = json.RawMessage(raw)
+		}
+		return []string{outputStr}, execErr
 	case "git_deploy":
 		return r.handleGitDeploy(ctx, command)
 	case "fs_list":
