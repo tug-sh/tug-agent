@@ -65,6 +65,30 @@ func isNonRetriable(err error) bool {
 	return errors.As(err, &target)
 }
 
+type pendingAuthError struct {
+	err error
+}
+
+func (e pendingAuthError) Error() string {
+	return e.err.Error()
+}
+
+func (e pendingAuthError) Unwrap() error {
+	return e.err
+}
+
+func markPendingAuth(err error) error {
+	if err == nil {
+		return nil
+	}
+	return pendingAuthError{err: err}
+}
+
+func isPendingAuthError(err error) bool {
+	var target pendingAuthError
+	return errors.As(err, &target)
+}
+
 func (r *Runtime) logReconnectRecoveryHint(reason error) {
 	envPath := strings.TrimSpace(r.config.AgentEnvPath)
 	if envPath == "" {
@@ -146,6 +170,10 @@ func (r *Runtime) Run(ctx context.Context) error {
 			consecutiveFailures-1,
 			r.config.ReconnectJitterPct,
 		)
+		if isPendingAuthError(err) {
+			waitDelay = 3 * time.Second
+			consecutiveFailures = 0
+		}
 		log.Printf("reconnect scheduled in %s (failure_streak=%d)", waitDelay, consecutiveFailures)
 		select {
 		case <-ctx.Done():
@@ -162,10 +190,10 @@ func (r *Runtime) connectAndServe(ctx context.Context) (bool, error) {
 	}
 
 	if strings.TrimSpace(r.config.ServerID) == "" {
-		return false, markNonRetriable(fmt.Errorf("server_id cannot be derived from token; run `tug --init`"))
+		return false, fmt.Errorf("server_id cannot be derived from token; run `tug --init`")
 	}
 	if strings.TrimSpace(r.config.AgentToken) == "" {
-		return false, markNonRetriable(fmt.Errorf("agent token is missing; run `tug --init`"))
+		return false, fmt.Errorf("agent token is missing; run `tug --init`")
 	}
 	url := fmt.Sprintf("%s?workspace_id=%s&server_id=%s&token=%s",
 		r.config.APIWebSocketURL,
@@ -178,7 +206,7 @@ func (r *Runtime) connectAndServe(ctx context.Context) (bool, error) {
 	conn, response, err := websocket.DefaultDialer.DialContext(ctx, url, http.Header{})
 	if err != nil {
 		if response != nil && (response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden) {
-			return false, fmt.Errorf("websocket authorization rejected (status %d); token may be pending pairing in dashboard", response.StatusCode)
+			return false, markPendingAuth(fmt.Errorf("websocket authorization rejected (status %d); token may be pending pairing in dashboard", response.StatusCode))
 		}
 		return false, fmt.Errorf("websocket dial failed: %w", err)
 	}
@@ -229,7 +257,7 @@ func (r *Runtime) connectAndServe(ctx context.Context) (bool, error) {
 			if details == "" {
 				details = "unauthorized agent connection"
 			}
-			return false, markNonRetriable(fmt.Errorf("websocket authorization rejected: %s; run `tug --init`", details))
+			return false, markPendingAuth(fmt.Errorf("websocket authorization rejected: %s; token may be pending pairing in dashboard", details))
 		}
 		if r.config.ProtocolV2Enabled {
 			var ack inboundAckV2
