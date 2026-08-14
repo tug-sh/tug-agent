@@ -118,16 +118,10 @@ func tryStartAgentService() string {
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return tryStartAgentDetachedFallback("systemctl not available")
 	}
-	if err := exec.Command("systemctl", "cat", "tug-agent.service").Run(); err != nil {
-		return tryStartAgentDetachedFallback("tug-agent.service not found")
-	}
-	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
-		return tryStartAgentDetachedFallback("cannot reload systemd daemon")
-	}
-	if err := exec.Command("systemctl", "start", "tug-agent.service").Run(); err != nil {
-		if errRestart := exec.Command("systemctl", "restart", "tug-agent.service").Run(); errRestart != nil {
-			return tryStartAgentDetachedFallback("cannot start tug-agent.service automatically")
-		}
+	_ = exec.Command("systemctl", "daemon-reload").Run()
+	_ = exec.Command("systemctl", "enable", "tug-agent.service").Run()
+	if output, err := exec.Command("systemctl", "restart", "tug-agent.service").CombinedOutput(); err != nil {
+		return fmt.Sprintf("systemctl restart failed: %s; run: sudo systemctl restart tug-agent", strings.TrimSpace(string(output)))
 	}
 	return "tug-agent.service started."
 }
@@ -136,14 +130,10 @@ func tryRestartAgentService() string {
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return tryStartAgentDetachedFallback("systemctl not available")
 	}
-	if err := exec.Command("systemctl", "cat", "tug-agent.service").Run(); err != nil {
-		return tryStartAgentDetachedFallback("tug-agent.service not found")
-	}
-	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
-		return tryStartAgentDetachedFallback("cannot reload systemd daemon")
-	}
-	if err := exec.Command("systemctl", "restart", "tug-agent.service").Run(); err != nil {
-		return tryStartAgentDetachedFallback("cannot restart tug-agent.service automatically")
+	_ = exec.Command("systemctl", "daemon-reload").Run()
+	_ = exec.Command("systemctl", "enable", "tug-agent.service").Run()
+	if output, err := exec.Command("systemctl", "restart", "tug-agent.service").CombinedOutput(); err != nil {
+		return fmt.Sprintf("systemctl restart failed: %s; run: sudo systemctl restart tug-agent", strings.TrimSpace(string(output)))
 	}
 	return "tug-agent.service restarted."
 }
