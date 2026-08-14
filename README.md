@@ -46,7 +46,7 @@ tug --status
 ```
 
 ### 4. Version Check
-Check current agent version (v1.0.1):
+Check current agent version (v1.0.2):
 ```bash
 tug version
 # or:
