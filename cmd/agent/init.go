@@ -26,6 +26,19 @@ type initData struct {
 	ConnectionURL string
 }
 
+func runStart(cfg config.Config) error {
+	initialized := strings.TrimSpace(cfg.ServerID) != "" && strings.TrimSpace(cfg.AgentToken) != ""
+	if !initialized {
+		fmt.Println("No connection configuration found. Initiating new connection setup...")
+		return runInit(cfg)
+	}
+
+	fmt.Println("Starting tug agent service in background...")
+	msg := tryStartAgentService()
+	fmt.Printf("   %s\n", msg)
+	return nil
+}
+
 func runInit(cfg config.Config) error {
 	data, err := generateInitData(cfg)
 	if err != nil {
@@ -101,6 +114,24 @@ func generateInitData(cfg config.Config) (initData, error) {
 	}, nil
 }
 
+func tryStartAgentService() string {
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return tryStartAgentDetachedFallback("systemctl not available")
+	}
+	if err := exec.Command("systemctl", "cat", "tug-agent.service").Run(); err != nil {
+		return tryStartAgentDetachedFallback("tug-agent.service not found")
+	}
+	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
+		return tryStartAgentDetachedFallback("cannot reload systemd daemon")
+	}
+	if err := exec.Command("systemctl", "start", "tug-agent.service").Run(); err != nil {
+		if errRestart := exec.Command("systemctl", "restart", "tug-agent.service").Run(); errRestart != nil {
+			return tryStartAgentDetachedFallback("cannot start tug-agent.service automatically")
+		}
+	}
+	return "tug-agent.service started."
+}
+
 func tryRestartAgentService() string {
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return tryStartAgentDetachedFallback("systemctl not available")
@@ -119,8 +150,13 @@ func tryRestartAgentService() string {
 
 func tryStartAgentDetachedFallback(reason string) string {
 	binaryPath := ""
-	if candidate, err := exec.LookPath("tug"); err == nil && strings.TrimSpace(candidate) != "" {
+	if candidate, err := exec.LookPath("tug-agent"); err == nil && strings.TrimSpace(candidate) != "" {
 		binaryPath = candidate
+	}
+	if binaryPath == "" {
+		if candidate, err := exec.LookPath("tug"); err == nil && strings.TrimSpace(candidate) != "" {
+			binaryPath = candidate
+		}
 	}
 	if binaryPath == "" {
 		if candidate, err := os.Executable(); err == nil && strings.TrimSpace(candidate) != "" {

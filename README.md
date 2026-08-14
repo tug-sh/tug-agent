@@ -19,38 +19,62 @@ Best of all — it is completely **stateless**. The entire state is kept securel
 
 ## 🛠️ CLI Cheat Sheet
 
-You control the agent using CLI flags. Here are the most useful commands to know:
+You control the agent using CLI flags or positional sub-commands (invokable as `tug` or `tug-agent`):
 
-### 1. Initialization (First Run)
+### 1. Start Service / Connect
+Forces starting the agent service in the background. If no configuration exists, initiates a new connection setup:
+```bash
+tug start
+# or:
+tug --start
+```
+
+### 2. Initialization (First Run)
 Generates a unique connection token and a dashboard link to pair your VPS:
 ```bash
-./tug-agent --init
-# or simply:
-./tug-agent init
+tug init
+# or:
+tug --init
 ```
 
-### 2. Status Check
-Wanna know if the agent is alive and which server/dashboard it's connected to?
+### 3. Status Check
+Check if the agent is active, its version, and connection status:
 ```bash
-./tug-agent --status
+tug status
+# or:
+tug --status
 ```
 
-### 3. Stop Service
+### 4. Version Check
+Check current agent version (v1.0.1):
+```bash
+tug version
+# or:
+tug --version
+```
+
+### 5. Stop Service
 Politely stops the systemd service:
 ```bash
-./tug-agent --stop
+tug stop
+# or:
+tug --stop
 ```
 
-### 4. Disconnect
+### 6. Disconnect
 Clears connection tokens and configuration. Useful if you want to pair the VPS with another account:
 ```bash
-./tug-agent --disconnect
+tug disconnect
+# or:
+tug --disconnect
 ```
 
-### 5. Uninstall (Remove)
+### 7. Uninstall (Remove)
 Removes the agent from the system, cleans up systemd files, and sweeps the floor:
 ```bash
-./tug-agent --remove
+tug remove
+# or:
+tug --remove
 ```
 
 ---

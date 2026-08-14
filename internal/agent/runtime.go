@@ -178,7 +178,7 @@ func (r *Runtime) connectAndServe(ctx context.Context) (bool, error) {
 	conn, response, err := websocket.DefaultDialer.DialContext(ctx, url, http.Header{})
 	if err != nil {
 		if response != nil && (response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden) {
-			return false, markNonRetriable(fmt.Errorf("websocket authorization rejected (status %d); run `tug --init`", response.StatusCode))
+			return false, fmt.Errorf("websocket authorization rejected (status %d); token may be pending pairing in dashboard", response.StatusCode)
 		}
 		return false, fmt.Errorf("websocket dial failed: %w", err)
 	}

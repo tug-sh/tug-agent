@@ -25,12 +25,14 @@ import (
 )
 
 func main() {
-	initMode := flag.Bool("init", false, "Generate connection key and dashboard URL")
-	statusMode := flag.Bool("status", false, "Show agent status")
-	stopMode := flag.Bool("stop", false, "Stop agent service")
-	disconnectMode := flag.Bool("disconnect", false, "Disconnect agent from dashboard")
-	removeMode := flag.Bool("remove", false, "Uninstall agent and remove service")
-	updateMode := flag.Bool("update", false, "Update agent binary to the latest version")
+	initMode := flag.Bool("init", false, "Generate connection key and dashboard URL (`tug init`)")
+	startMode := flag.Bool("start", false, "Start agent service in background (initiates connection setup if not configured, `tug start`)")
+	statusMode := flag.Bool("status", false, "Show agent status (`tug status`)")
+	stopMode := flag.Bool("stop", false, "Stop agent service (`tug stop`)")
+	disconnectMode := flag.Bool("disconnect", false, "Disconnect agent from dashboard (`tug disconnect`)")
+	removeMode := flag.Bool("remove", false, "Uninstall agent and remove service (`tug remove`)")
+	updateMode := flag.Bool("update", false, "Update agent binary to the latest version (`tug update`)")
+	versionMode := flag.Bool("version", false, "Show agent version (`tug version`)")
 	testMode := flag.Bool("test-mode", false, "Run in test mode for updater health check")
 	verbose := flag.Bool("verbose", true, "Enable verbose operation logs")
 	flag.Parse()
@@ -45,6 +47,11 @@ func main() {
 	}
 
 	cfg := config.Load()
+	if *versionMode || hasCommand(flag.Args(), "version") {
+		fmt.Printf("tug-agent v%s\n", cfg.AgentVersion)
+		return
+	}
+
 	if *updateMode || hasCommand(flag.Args(), "update") {
 		if err := runUpdate(cfg); err != nil {
 			log.Fatalf("update failed: %v", err)
@@ -56,6 +63,12 @@ func main() {
 	if *initMode || hasCommand(flag.Args(), "init") {
 		if err := runInit(cfg); err != nil {
 			log.Fatalf("init failed: %v", err)
+		}
+		return
+	}
+	if *startMode || hasCommand(flag.Args(), "start") {
+		if err := runStart(cfg); err != nil {
+			log.Fatalf("start failed: %v", err)
 		}
 		return
 	}
@@ -243,6 +256,7 @@ func runStatus() error {
 
 	fmt.Println("tug agent status")
 	fmt.Println("----------------")
+	fmt.Printf("version: v%s\n", cfg.AgentVersion)
 	fmt.Printf("service: %s\n", serviceState)
 	fmt.Printf("initialized: %t\n", initialized)
 	fmt.Printf("server_id: %s\n", fallbackValue(cfg.ServerID, "(not set)"))
