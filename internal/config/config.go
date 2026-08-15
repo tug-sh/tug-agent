@@ -27,7 +27,7 @@ type Config struct {
 	ProtocolV2QueuePath string
 }
 
-const defaultAgentVersion = "1.0.2"
+const defaultAgentVersion = "1.0.3"
 const (
 	defaultTrafficProfile = "default"
 	debugTrafficProfile   = "debug"

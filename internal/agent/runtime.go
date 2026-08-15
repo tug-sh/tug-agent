@@ -669,11 +669,15 @@ type outboundCommandResult struct {
 }
 
 type outboundHeartbeat struct {
-	Type         string `json:"type"`
-	ServerID     string `json:"server_id"`
-	WorkspaceID  string `json:"workspace_id,omitempty"`
-	AgentVersion string `json:"agent_version,omitempty"`
-	SentAtUnix   int64  `json:"sent_at_unix"`
+	Type          string  `json:"type"`
+	ServerID      string  `json:"server_id"`
+	WorkspaceID   string  `json:"workspace_id,omitempty"`
+	AgentVersion  string  `json:"agent_version,omitempty"`
+	SentAtUnix    int64   `json:"sent_at_unix"`
+	CPUPercent    float64 `json:"cpu_percent,omitempty"`
+	RAMUsedBytes  uint64  `json:"ram_used_bytes,omitempty"`
+	RAMTotalBytes uint64  `json:"ram_total_bytes,omitempty"`
+	DiskFreeBytes uint64  `json:"disk_free_bytes,omitempty"`
 }
 
 type agentCronSchedule struct {
@@ -699,12 +703,20 @@ type outboundCronSchedulesSnapshot struct {
 }
 
 func (r *Runtime) sendHeartbeat(conn *websocket.Conn) error {
+	cpuPct, _ := detectCPUUsagePct()
+	ramUsed, ramTotal, _, _ := detectRAMUsage()
+	diskFree, _ := detectDiskFree("/")
+
 	heartbeat := outboundHeartbeat{
-		Type:         "heartbeat",
-		ServerID:     strings.TrimSpace(r.config.ServerID),
-		WorkspaceID:  strings.TrimSpace(r.config.WorkspaceID),
-		AgentVersion: strings.TrimSpace(r.config.AgentVersion),
-		SentAtUnix:   time.Now().Unix(),
+		Type:          "heartbeat",
+		ServerID:      strings.TrimSpace(r.config.ServerID),
+		WorkspaceID:   strings.TrimSpace(r.config.WorkspaceID),
+		AgentVersion:  strings.TrimSpace(r.config.AgentVersion),
+		SentAtUnix:    time.Now().Unix(),
+		CPUPercent:    cpuPct,
+		RAMUsedBytes:  ramUsed,
+		RAMTotalBytes: ramTotal,
+		DiskFreeBytes: diskFree,
 	}
 	if err := r.writeJSON(conn, heartbeat); err != nil {
 		return fmt.Errorf("cannot write heartbeat: %w", err)
@@ -764,6 +776,19 @@ func (r *Runtime) executeCommand(
 	payloadOut *json.RawMessage,
 ) ([]string, error) {
 	switch command.Type {
+	case "get_docker_disk_usage":
+		report, err := r.dockerManager.GetDockerDiskUsage(ctx)
+		if err != nil {
+			return nil, err
+		}
+		raw, err := json.Marshal(report)
+		if err == nil {
+			*payloadOut = json.RawMessage(raw)
+		}
+		return []string{"Fetched Docker disk usage report successfully."}, nil
+	case "prune", "run_docker_prune":
+		logs, err := r.dockerManager.Prune(ctx)
+		return logs, err
 	case "terminal_start", "terminal_input", "terminal_resize", "terminal_stop":
 		return nil, r.handleTerminalCommand(ctx, conn, command)
 	case "run_cron_task", "exec_command":

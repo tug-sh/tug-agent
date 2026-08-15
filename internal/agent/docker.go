@@ -694,3 +694,76 @@ func splitCSV(raw string) []string {
 	}
 	return values
 }
+
+type DockerDiskUsageItem struct {
+	Type        string `json:"type"`
+	TotalCount  int    `json:"total_count"`
+	ActiveCount int    `json:"active_count"`
+	Size        string `json:"size"`
+	Reclaimable string `json:"reclaimable"`
+}
+
+type DockerDiskUsageReport struct {
+	Images      DockerDiskUsageItem `json:"images"`
+	Containers  DockerDiskUsageItem `json:"containers"`
+	Volumes     DockerDiskUsageItem `json:"volumes"`
+	BuildCache  DockerDiskUsageItem `json:"build_cache"`
+	RawOutput   string              `json:"raw_output"`
+}
+
+func (d *DockerManager) Prune(ctx context.Context) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "docker", "system", "prune", "-f")
+	output, err := cmd.CombinedOutput()
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if err != nil {
+		return lines, fmt.Errorf("docker system prune failed: %s: %w", string(output), err)
+	}
+	return lines, nil
+}
+
+func (d *DockerManager) GetDockerDiskUsage(ctx context.Context) (DockerDiskUsageReport, error) {
+	cmd := exec.CommandContext(ctx, "docker", "system", "df")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return DockerDiskUsageReport{}, fmt.Errorf("docker system df failed: %s: %w", string(output), err)
+	}
+
+	report := DockerDiskUsageReport{
+		RawOutput: string(output),
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "TYPE") || line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		itemType := strings.ToLower(fields[0])
+		item := DockerDiskUsageItem{
+			Type: fields[0],
+		}
+		if len(fields) >= 5 {
+			fmt.Sscanf(fields[1], "%d", &item.TotalCount)
+			fmt.Sscanf(fields[2], "%d", &item.ActiveCount)
+			item.Size = fields[3]
+			item.Reclaimable = strings.Join(fields[4:], " ")
+		}
+
+		switch {
+		case strings.Contains(itemType, "image"):
+			report.Images = item
+		case strings.Contains(itemType, "container"):
+			report.Containers = item
+		case strings.Contains(itemType, "volume"):
+			report.Volumes = item
+		case strings.Contains(itemType, "build"):
+			report.BuildCache = item
+		}
+	}
+
+	return report, nil
+}

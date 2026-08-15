@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"io"
 	"syscall"
+	"time"
 
+	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/mem"
 )
 
@@ -29,4 +31,20 @@ func detectTotalRAMBytes() (uint64, error) {
 		return 0, fmt.Errorf("cannot read memory stats: %w", err)
 	}
 	return stats.Total, nil
+}
+
+func detectCPUUsagePct() (float64, error) {
+	percentages, err := cpu.Percent(100*time.Millisecond, false)
+	if err != nil || len(percentages) == 0 {
+		return 0, err
+	}
+	return percentages[0], nil
+}
+
+func detectRAMUsage() (usedBytes uint64, totalBytes uint64, percent float64, err error) {
+	stats, err := mem.VirtualMemory()
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return stats.Used, stats.Total, stats.UsedPercent, nil
 }
