@@ -864,7 +864,19 @@ func (r *Runtime) executeCommand(
 		}
 		return []string{"Deleted " + command.FilePath}, nil
 	case "self_update":
-		return nil, r.updater.SafeUpdate(ctx, command.BinaryURL)
+		if err := r.updater.SafeUpdate(ctx, command.BinaryURL); err != nil {
+			return nil, err
+		}
+		go func() {
+			time.Sleep(1 * time.Second)
+			restartCmd := exec.Command("systemctl", "restart", "tug-agent.service")
+			if err := restartCmd.Start(); err != nil {
+				_ = exec.Command("systemctl", "restart", "tug-agent").Start()
+			}
+			time.Sleep(2 * time.Second)
+			os.Exit(0)
+		}()
+		return []string{"Agent binary updated successfully. Service restarting..."}, nil
 	case "disconnect":
 		if err := RunDetachedUninstall(command.CleanDockerResources); err != nil {
 			return nil, err
