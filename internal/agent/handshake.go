@@ -23,6 +23,7 @@ type Handshake struct {
 	CPUCores      int                  `json:"cpu_cores"`
 	RAMBytes      uint64               `json:"ram_bytes"`
 	DiskFreeBytes uint64               `json:"disk_free_bytes"`
+	DiskTotalBytes uint64               `json:"disk_total_bytes"`
 	LocalIP       string               `json:"local_ip"`
 	PublicIP      string               `json:"public_ip"`
 	DockerVersion string               `json:"docker_version"`

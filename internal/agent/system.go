@@ -15,14 +15,19 @@ func ioReadAll(reader io.Reader) ([]byte, error) {
 }
 
 func detectDiskFree(path string) (uint64, error) {
+	free, _, err := detectDiskStats(path)
+	return free, err
+}
+
+func detectDiskStats(path string) (freeBytes uint64, totalBytes uint64, err error) {
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs(path, &stat); err != nil {
 		if path != "/" {
-			return detectDiskFree("/")
+			return detectDiskStats("/")
 		}
-		return 0, fmt.Errorf("cannot read disk stats: %w", err)
+		return 0, 0, fmt.Errorf("cannot read disk stats: %w", err)
 	}
-	return stat.Bavail * uint64(stat.Bsize), nil
+	return stat.Bavail * uint64(stat.Bsize), stat.Blocks * uint64(stat.Bsize), nil
 }
 
 func detectTotalRAMBytes() (uint64, error) {

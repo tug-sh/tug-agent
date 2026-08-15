@@ -669,15 +669,16 @@ type outboundCommandResult struct {
 }
 
 type outboundHeartbeat struct {
-	Type          string  `json:"type"`
-	ServerID      string  `json:"server_id"`
-	WorkspaceID   string  `json:"workspace_id,omitempty"`
-	AgentVersion  string  `json:"agent_version,omitempty"`
-	SentAtUnix    int64   `json:"sent_at_unix"`
-	CPUPercent    float64 `json:"cpu_percent,omitempty"`
-	RAMUsedBytes  uint64  `json:"ram_used_bytes,omitempty"`
-	RAMTotalBytes uint64  `json:"ram_total_bytes,omitempty"`
-	DiskFreeBytes uint64  `json:"disk_free_bytes,omitempty"`
+	Type           string  `json:"type"`
+	ServerID       string  `json:"server_id"`
+	WorkspaceID    string  `json:"workspace_id,omitempty"`
+	AgentVersion   string  `json:"agent_version,omitempty"`
+	SentAtUnix     int64   `json:"sent_at_unix"`
+	CPUPercent     float64 `json:"cpu_percent,omitempty"`
+	RAMUsedBytes   uint64  `json:"ram_used_bytes,omitempty"`
+	RAMTotalBytes  uint64  `json:"ram_total_bytes,omitempty"`
+	DiskFreeBytes  uint64  `json:"disk_free_bytes,omitempty"`
+	DiskTotalBytes uint64  `json:"disk_total_bytes,omitempty"`
 }
 
 type agentCronSchedule struct {
@@ -705,18 +706,19 @@ type outboundCronSchedulesSnapshot struct {
 func (r *Runtime) sendHeartbeat(conn *websocket.Conn) error {
 	cpuPct, _ := detectCPUUsagePct()
 	ramUsed, ramTotal, _, _ := detectRAMUsage()
-	diskFree, _ := detectDiskFree("/")
+	diskFree, diskTotal, _ := detectDiskStats("/")
 
 	heartbeat := outboundHeartbeat{
-		Type:          "heartbeat",
-		ServerID:      strings.TrimSpace(r.config.ServerID),
-		WorkspaceID:   strings.TrimSpace(r.config.WorkspaceID),
-		AgentVersion:  strings.TrimSpace(r.config.AgentVersion),
-		SentAtUnix:    time.Now().Unix(),
-		CPUPercent:    cpuPct,
-		RAMUsedBytes:  ramUsed,
-		RAMTotalBytes: ramTotal,
-		DiskFreeBytes: diskFree,
+		Type:           "heartbeat",
+		ServerID:       strings.TrimSpace(r.config.ServerID),
+		WorkspaceID:    strings.TrimSpace(r.config.WorkspaceID),
+		AgentVersion:   strings.TrimSpace(r.config.AgentVersion),
+		SentAtUnix:     time.Now().Unix(),
+		CPUPercent:     cpuPct,
+		RAMUsedBytes:   ramUsed,
+		RAMTotalBytes:  ramTotal,
+		DiskFreeBytes:  diskFree,
+		DiskTotalBytes: diskTotal,
 	}
 	if err := r.writeJSON(conn, heartbeat); err != nil {
 		return fmt.Errorf("cannot write heartbeat: %w", err)
@@ -1197,10 +1199,8 @@ func (r *Runtime) buildHandshake() (Handshake, error) {
 		return Handshake{}, err
 	}
 
-	diskFreeBytes, err := detectDiskFree(GetDataDir())
-	if err != nil {
-		return Handshake{}, err
-	}
+	diskFreeBytes, diskTotalBytes, _ := detectDiskStats(GetDataDir())
+
 	r.debugf(
 		"build handshake snapshot: host=%s local_ip=%s public_ip=%s docker=%s containers=%d",
 		hostName,
@@ -1211,16 +1211,17 @@ func (r *Runtime) buildHandshake() (Handshake, error) {
 	)
 
 	return Handshake{
-		Type:          "handshake",
-		ServerID:      r.config.ServerID,
-		WorkspaceID:   r.config.WorkspaceID,
-		HostName:      hostName,
-		AgentVersion:  r.config.AgentVersion,
-		OS:            runtime.GOOS,
-		Arch:          runtime.GOARCH,
-		CPUCores:      runtime.NumCPU(),
-		RAMBytes:      totalRAMBytes,
-		DiskFreeBytes: diskFreeBytes,
+		Type:           "handshake",
+		ServerID:       r.config.ServerID,
+		WorkspaceID:    r.config.WorkspaceID,
+		HostName:       hostName,
+		AgentVersion:   r.config.AgentVersion,
+		OS:             runtime.GOOS,
+		Arch:           runtime.GOARCH,
+		CPUCores:       runtime.NumCPU(),
+		RAMBytes:       totalRAMBytes,
+		DiskFreeBytes:  diskFreeBytes,
+		DiskTotalBytes: diskTotalBytes,
 		LocalIP:       localIP,
 		PublicIP:      publicIP,
 		DockerVersion: dockerVersion,
