@@ -1194,10 +1194,7 @@ func (r *Runtime) buildHandshake() (Handshake, error) {
 	containers, _ := r.dockerManager.ListContainers(ctx)
 	networks, _ := r.dockerManager.ListNetworks(ctx)
 	hostName, _ := os.Hostname()
-	totalRAMBytes, err := detectTotalRAMBytes()
-	if err != nil {
-		return Handshake{}, err
-	}
+	ramUsed, totalRAMBytes, _, _ := detectRAMUsage()
 
 	diskFreeBytes, diskTotalBytes, _ := detectDiskStats(GetDataDir())
 
@@ -1220,6 +1217,7 @@ func (r *Runtime) buildHandshake() (Handshake, error) {
 		Arch:           runtime.GOARCH,
 		CPUCores:       runtime.NumCPU(),
 		RAMBytes:       totalRAMBytes,
+		RAMUsedBytes:   ramUsed,
 		DiskFreeBytes:  diskFreeBytes,
 		DiskTotalBytes: diskTotalBytes,
 		LocalIP:       localIP,
