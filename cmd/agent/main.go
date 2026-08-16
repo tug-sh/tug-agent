@@ -325,6 +325,18 @@ func fallbackValue(value, fallback string) string {
 	return trimmed
 }
 
+func isProcessAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	err = process.Signal(syscall.Signal(0))
+	return err == nil
+}
+
 func acquireSingleInstanceLock() (func(), error) {
 	lockPath := os.Getenv("TUG_AGENT_LOCK_PATH")
 	if strings.TrimSpace(lockPath) == "" {
@@ -341,38 +353,54 @@ func acquireSingleInstanceLock() (func(), error) {
 	}
 
 	var lockErr error
-	for attempts := 0; attempts < 2; attempts++ {
+	for attempts := 0; attempts < 3; attempts++ {
 		lockErr = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if lockErr == nil {
 			break
 		}
 
-		if attempts == 0 && (errors.Is(lockErr, syscall.EWOULDBLOCK) || errors.Is(lockErr, syscall.EAGAIN)) {
-			// Read PID from file
+		if attempts < 2 && (errors.Is(lockErr, syscall.EWOULDBLOCK) || errors.Is(lockErr, syscall.EAGAIN)) {
+			// Read PID from lock file
 			_, _ = lockFile.Seek(0, 0)
 			content, readErr := io.ReadAll(lockFile)
 			pidStr := strings.TrimSpace(string(content))
+			pid, _ := strconv.Atoi(pidStr)
 
 			if readErr == nil && pidStr != "" {
-				fmt.Printf("⚠️ Agent is already running (PID: %s)\n", pidStr)
-				fmt.Print("Do you want to kill it and start a new instance? [y/N]: ")
-				reader := bufio.NewReader(os.Stdin)
-				response, _ := reader.ReadString('\n')
-				response = strings.TrimSpace(strings.ToLower(response))
+				if pid > 0 && !isProcessAlive(pid) {
+					// Stale lock file from a dead process — truncate and try again
+					_ = lockFile.Truncate(0)
+					_, _ = lockFile.Seek(0, 0)
+					time.Sleep(100 * time.Millisecond)
+					continue
+				}
 
-				if response == "y" || response == "yes" {
-					killCmd := exec.Command("kill", "-9", pidStr)
-					if err := killCmd.Run(); err == nil {
-						fmt.Printf("Process %s killed.\n", pidStr)
-						time.Sleep(500 * time.Millisecond)
-						continue // Try locking again
-					} else {
-						fmt.Printf("Failed to kill process %s: %v\n", pidStr, err)
+				// Process is still alive or PID unknown
+				shouldKill := false
+				if isSystemdService() || !isTerminal(os.Stdin) {
+					// Non-interactive / systemd mode: kill old process automatically on restart
+					log.Printf("[lock] terminating existing agent process PID %s to start new instance", pidStr)
+					shouldKill = true
+				} else {
+					// Interactive terminal: ask user
+					fmt.Printf("⚠️ Agent is already running (PID: %s)\n", pidStr)
+					fmt.Print("Do you want to kill it and start a new instance? [y/N]: ")
+					reader := bufio.NewReader(os.Stdin)
+					response, _ := reader.ReadString('\n')
+					response = strings.TrimSpace(strings.ToLower(response))
+					if response == "y" || response == "yes" {
+						shouldKill = true
 					}
+				}
+
+				if shouldKill && pid > 0 {
+					_ = exec.Command("kill", "-9", pidStr).Run()
+					time.Sleep(300 * time.Millisecond)
+					continue // Try locking again
 				}
 			}
 		}
-		break // Exit loop if we're not retrying
+		break
 	}
 
 	if lockErr != nil {
