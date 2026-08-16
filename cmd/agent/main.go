@@ -379,7 +379,7 @@ func runUpdate(cfg config.Config) error {
 		baseURL = baseURL[:idx]
 	}
 	binaryName := fmt.Sprintf("agent-%s-%s", runtime.GOOS, runtime.GOARCH)
-	binaryURL := fmt.Sprintf("%s/releases/%s", baseURL, binaryName)
+	binaryURL := fmt.Sprintf("%s/releases/%s?version=latest", baseURL, binaryName)
 
 	fmt.Printf("Updating agent from: %s\n", binaryURL)
 	updater := agent.NewUpdater()

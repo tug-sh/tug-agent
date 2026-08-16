@@ -50,25 +50,22 @@ func runInit(cfg config.Config) error {
 	}
 	restartMsg := tryRestartAgentService()
 
-	fmt.Println("========================================")
-	fmt.Println(" tug.sh agent initialization completed")
-	fmt.Println("========================================")
+	// ANSI color formatting for high visibility
+	boldCyan := "\033[1;36m"
+	boldGreen := "\033[1;32m"
+	boldYellow := "\033[1;33m"
+	boldWhite := "\033[1;37m"
+	reset := "\033[0m"
+
 	fmt.Println()
-	fmt.Printf("Detected host    : %s\n", data.HostName)
-	fmt.Printf("VPS name (slug)  : %s\n", data.ServerName)
+	fmt.Printf("%s✔ Agent initialized successfully!%s\n\n", boldGreen, reset)
+	fmt.Printf("%s━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━%s\n", boldCyan, reset)
+	fmt.Printf(" %sOPEN THIS URL TO CONNECT YOUR VPS TO THE DASHBOARD:%s\n", boldYellow, reset)
+	fmt.Printf(" %s%s%s\n", boldWhite, data.ConnectionURL, reset)
+	fmt.Printf("%s━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━%s\n", boldCyan, reset)
 	fmt.Println()
-	fmt.Printf("Server ID        : %s\n", data.ServerID)
-	fmt.Printf("Agent token      : %s\n", data.AgentToken)
-	fmt.Printf("Environment file : %s\n", data.AgentEnvPath)
-	fmt.Println()
-	fmt.Println("Open this URL to connect the server:")
-	fmt.Println(data.ConnectionURL)
-	fmt.Println()
-	fmt.Println("Next steps:")
-	fmt.Println("1) Open the URL above in your browser.")
-	fmt.Println("2) Agent service restart was attempted automatically.")
 	if restartMsg != "" {
-		fmt.Printf("   %s\n", restartMsg)
+		fmt.Printf("   %s%s%s\n\n", boldGreen, restartMsg, reset)
 	}
 
 	return nil

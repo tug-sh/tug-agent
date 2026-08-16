@@ -864,7 +864,20 @@ func (r *Runtime) executeCommand(
 		}
 		return []string{"Deleted " + command.FilePath}, nil
 	case "self_update":
-		if err := r.updater.SafeUpdate(ctx, command.BinaryURL); err != nil {
+		onProgress := func(downloaded uint64, total uint64, percent int) {
+			progressMsg := map[string]any{
+				"type":             "update_progress",
+				"command_id":       command.CommandID,
+				"server_id":        r.config.ServerID,
+				"workspace_id":     r.config.WorkspaceID,
+				"downloaded_bytes": downloaded,
+				"total_bytes":      total,
+				"percent":          percent,
+			}
+			_ = r.writeJSON(conn, progressMsg)
+		}
+
+		if err := r.updater.SafeUpdateWithProgress(ctx, command.BinaryURL, onProgress); err != nil {
 			return nil, err
 		}
 		go func() {
