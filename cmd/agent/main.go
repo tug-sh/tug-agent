@@ -431,3 +431,18 @@ func printHelp(version string) {
 	fmt.Println("  --init, --start, --status, --stop, --update, --disconnect, --remove, --version, --help")
 	fmt.Println()
 }
+
+func isTerminal(f *os.File) bool {
+	if f == nil {
+		return false
+	}
+	stat, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return (stat.Mode() & os.ModeCharDevice) != 0
+}
+
+func isSystemdService() bool {
+	return os.Getenv("INVOCATION_ID") != "" || os.Getenv("JOURNAL_STREAM") != ""
+}
