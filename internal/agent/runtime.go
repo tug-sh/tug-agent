@@ -223,6 +223,11 @@ func (r *Runtime) connectAndServe(ctx context.Context) (bool, error) {
 	r.debugf("initial handshake sent")
 	sessionCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	go func() {
+		<-sessionCtx.Done()
+		_ = conn.Close()
+	}()
 	heartbeatInterval := r.config.HeartbeatInterval
 	if heartbeatInterval <= 0 {
 		heartbeatInterval = 30 * time.Second

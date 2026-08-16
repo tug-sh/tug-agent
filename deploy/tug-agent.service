@@ -9,6 +9,7 @@ User=root
 ExecStart=/usr/local/bin/tug run
 Restart=always
 RestartSec=3
+TimeoutStopSec=5
 EnvironmentFile=/etc/tug/agent.env
 NoNewPrivileges=true
 LimitNOFILE=65535
