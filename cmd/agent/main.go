@@ -33,8 +33,16 @@ func main() {
 	removeMode := flag.Bool("remove", false, "Uninstall agent and remove service (`tug remove`)")
 	updateMode := flag.Bool("update", false, "Update agent binary to the latest version (`tug update`)")
 	versionMode := flag.Bool("version", false, "Show agent version (`tug version`)")
+	runMode := flag.Bool("run", false, "Run agent in daemon mode (`tug run`)")
+	helpMode := flag.Bool("help", false, "Show help and available commands")
 	testMode := flag.Bool("test-mode", false, "Run in test mode for updater health check")
 	verbose := flag.Bool("verbose", true, "Enable verbose operation logs")
+
+	flag.Usage = func() {
+		cfg := config.Load()
+		printHelp(cfg.AgentVersion)
+	}
+
 	flag.Parse()
 
 	if *testMode {
@@ -47,6 +55,12 @@ func main() {
 	}
 
 	cfg := config.Load()
+
+	if *helpMode || hasCommand(flag.Args(), "help") || hasCommand(flag.Args(), "-h") || hasCommand(flag.Args(), "--help") {
+		printHelp(cfg.AgentVersion)
+		return
+	}
+
 	if *versionMode || hasCommand(flag.Args(), "version") {
 		fmt.Printf("tug-agent v%s\n", cfg.AgentVersion)
 		return
@@ -100,6 +114,17 @@ func main() {
 			log.Fatalf("remove failed: %v", err)
 		}
 		fmt.Println("Agent uninstall started in background.")
+		return
+	}
+
+	isRunDaemon := *runMode || hasCommand(flag.Args(), "run") || hasCommand(flag.Args(), "daemon") || hasCommand(flag.Args(), "run-service") || hasCommand(flag.Args(), "service")
+
+	if isSystemdService() || (!isTerminal(os.Stdout) && !isTerminal(os.Stdin) && len(flag.Args()) == 0 && flag.NFlag() == 0) {
+		isRunDaemon = true
+	}
+
+	if !isRunDaemon {
+		printHelp(cfg.AgentVersion)
 		return
 	}
 
@@ -384,4 +409,25 @@ func runUpdate(cfg config.Config) error {
 	fmt.Printf("Updating agent from: %s\n", binaryURL)
 	updater := agent.NewUpdater()
 	return updater.SafeUpdate(context.Background(), binaryURL)
+}
+
+func printHelp(version string) {
+	fmt.Printf("\033[1;36mtug\033[0m v%s - VPS control center agent\n\n", version)
+	fmt.Println("\033[1;33mUSAGE:\033[0m")
+	fmt.Println("  tug <command> [flags]")
+	fmt.Println()
+	fmt.Println("\033[1;33mCOMMANDS:\033[0m")
+	fmt.Println("  \033[1;37minit\033[0m        Generate connection pairing key and dashboard link")
+	fmt.Println("  \033[1;37mstart\033[0m       Start background agent service (`systemctl start tug-agent`)")
+	fmt.Println("  \033[1;37mstatus\033[0m      Show agent connection status and service health")
+	fmt.Println("  \033[1;37mstop\033[0m        Stop agent background service (`systemctl stop tug-agent`)")
+	fmt.Println("  \033[1;37mupdate\033[0m      Update agent binary to the latest release")
+	fmt.Println("  \033[1;37mdisconnect\033[0m  Disconnect agent from dashboard and reset token")
+	fmt.Println("  \033[1;37mremove\033[0m      Uninstall agent and remove systemd service")
+	fmt.Println("  \033[1;37mversion\033[0m     Display current agent version")
+	fmt.Println("  \033[1;37mrun\033[0m         Run agent in daemon worker mode (used by systemd)")
+	fmt.Println()
+	fmt.Println("\033[1;33mFLAGS:\033[0m")
+	fmt.Println("  --init, --start, --status, --stop, --update, --disconnect, --remove, --version, --help")
+	fmt.Println()
 }

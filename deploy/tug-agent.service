@@ -6,7 +6,7 @@ Requires=docker.service
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/local/bin/tug
+ExecStart=/usr/local/bin/tug run
 Restart=always
 RestartSec=3
 EnvironmentFile=/etc/tug/agent.env
