@@ -195,9 +195,8 @@ func (r *Runtime) connectAndServe(ctx context.Context) (bool, error) {
 	if strings.TrimSpace(r.config.AgentToken) == "" {
 		return false, fmt.Errorf("agent token is missing; run `tug --init`")
 	}
-	url := fmt.Sprintf("%s?workspace_id=%s&server_id=%s&token=%s",
+	url := fmt.Sprintf("%s?server_id=%s&token=%s",
 		r.config.APIWebSocketURL,
-		"",
 		r.config.ServerID,
 		r.config.AgentToken,
 	)
