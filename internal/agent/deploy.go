@@ -43,9 +43,14 @@ func (r *Runtime) handleGitDeploy(ctx context.Context, cmd inboundCommand) ([]st
 	}
 
 	// 1. Fetch code
-	// If directory doesn't exist, we clone it. If it does, we pull.
-	if _, err := os.Stat(deployDir); os.IsNotExist(err) {
+	// Check if .git subdirectory exists inside deployDir
+	gitMetaDir := filepath.Join(deployDir, ".git")
+	if _, err := os.Stat(gitMetaDir); os.IsNotExist(err) {
 		logFn(fmt.Sprintf("Cloning repo %s (branch %s) into %s...", repoURL, branch, deployDir))
+		
+		// Remove empty directory if os.MkdirAll created it so git clone can populate it cleanly
+		_ = os.RemoveAll(deployDir)
+
 		gitCmd := exec.CommandContext(ctx, "git", "clone", "-b", branch, repoURL, deployDir)
 		if output, err := gitCmd.CombinedOutput(); err != nil {
 			logFn(fmt.Sprintf("git clone failed: %s", string(output)))
@@ -53,7 +58,7 @@ func (r *Runtime) handleGitDeploy(ctx context.Context, cmd inboundCommand) ([]st
 		}
 		logFn("git clone succeeded.")
 	} else {
-		logFn(fmt.Sprintf("Directory %s exists. Pulling latest from branch %s...", deployDir, branch))
+		logFn(fmt.Sprintf("Repository exists at %s. Pulling latest from branch %s...", deployDir, branch))
 		
 		// First fetch
 		fetchCmd := exec.CommandContext(ctx, "git", "-C", deployDir, "fetch", "origin", branch)
@@ -74,43 +79,67 @@ func (r *Runtime) handleGitDeploy(ctx context.Context, cmd inboundCommand) ([]st
 	// 2. Prepare merged .env file (Git repository .env + Dashboard overrides)
 	syncProjectEnvFile(deployDir, cmd.ProjectID, logFn)
 
-	// 3. Execute deployment based on FileType
-	if cmd.FileType == "compose" {
-		targetFile := cmd.FilePath
-		if targetFile == "" {
-			targetFile = "docker-compose.yml"
-		}
-		
-		composePath := filepath.Join(deployDir, targetFile)
-		if _, err := os.Stat(composePath); os.IsNotExist(err) {
-			return logs, fmt.Errorf("compose file %s not found in repo", targetFile)
-		}
-
-		var dcCmd *exec.Cmd
-		if cmd.Command != "" {
-			logFn(fmt.Sprintf("Running custom command: %s", cmd.Command))
-			dcCmd = exec.CommandContext(ctx, "sh", "-c", cmd.Command)
-		} else {
-			var composeCommand string
-			dcCmd, composeCommand = ComposeCommand(ctx, "-f", composePath, "up", "-d", "--build")
-			logFn(fmt.Sprintf("Running %s -f %s up -d --build...", composeCommand, targetFile))
-		}
-		dcCmd.Dir = deployDir
-		
-		output, err := dcCmd.CombinedOutput()
-		for _, line := range strings.Split(string(output), "\n") {
-			if strings.TrimSpace(line) != "" {
-				logFn(line)
-			}
-		}
-		
-		if err != nil {
-			return logs, fmt.Errorf("compose up failed: %v, output: %s", err, string(output))
-		}
-		logFn("Deployment completed successfully.")
-	} else {
-		logFn(fmt.Sprintf("Unsupported file type %s. Skipping deployment command.", cmd.FileType))
+	// 3. Resolve compose file or Dockerfile
+	targetFile := cmd.FilePath
+	if targetFile == "" {
+		targetFile = "docker-compose.yml"
 	}
+	composePath := filepath.Join(deployDir, targetFile)
+
+	if _, err := os.Stat(composePath); os.IsNotExist(err) {
+		// Fallback checks for common filenames
+		if _, errAlt := os.Stat(filepath.Join(deployDir, "docker-compose.yaml")); errAlt == nil {
+			targetFile = "docker-compose.yaml"
+			composePath = filepath.Join(deployDir, targetFile)
+		} else if _, errAlt := os.Stat(filepath.Join(deployDir, "compose.yaml")); errAlt == nil {
+			targetFile = "compose.yaml"
+			composePath = filepath.Join(deployDir, targetFile)
+		} else if _, errAlt := os.Stat(filepath.Join(deployDir, "compose.yml")); errAlt == nil {
+			targetFile = "compose.yml"
+			composePath = filepath.Join(deployDir, targetFile)
+		} else if _, errAlt := os.Stat(filepath.Join(deployDir, "Dockerfile")); errAlt == nil {
+			// Auto-generate docker-compose.yml for Dockerfile projects
+			logFn("No docker-compose file found, but Dockerfile exists. Auto-generating docker-compose.yml...")
+			genComposeContent := "services:\n  app:\n    build:\n      context: .\n      dockerfile: Dockerfile\n    restart: always\n"
+			_ = os.WriteFile(filepath.Join(deployDir, "docker-compose.yml"), []byte(genComposeContent), 0644)
+			targetFile = "docker-compose.yml"
+			composePath = filepath.Join(deployDir, targetFile)
+		} else {
+			return logs, fmt.Errorf("compose file or Dockerfile '%s' not found in repo after clone", targetFile)
+		}
+	}
+
+	// Ensure standard projects/<ProjectID>/docker-compose.yml exists for dashboard & API editor
+	standardComposePath := filepath.Join(deployDir, "docker-compose.yml")
+	if composePath != standardComposePath {
+		if content, readErr := os.ReadFile(composePath); readErr == nil {
+			_ = os.WriteFile(standardComposePath, content, 0644)
+		}
+	}
+
+	// 4. Execute deployment
+	var dcCmd *exec.Cmd
+	if cmd.Command != "" {
+		logFn(fmt.Sprintf("Running custom command: %s", cmd.Command))
+		dcCmd = exec.CommandContext(ctx, "sh", "-c", cmd.Command)
+	} else {
+		var composeCommand string
+		dcCmd, composeCommand = ComposeCommand(ctx, "-f", composePath, "up", "-d", "--build")
+		logFn(fmt.Sprintf("Running %s -f %s up -d --build...", composeCommand, targetFile))
+	}
+	dcCmd.Dir = deployDir
+	
+	output, err := dcCmd.CombinedOutput()
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.TrimSpace(line) != "" {
+			logFn(line)
+		}
+	}
+	
+	if err != nil {
+		return logs, fmt.Errorf("compose up failed: %v, output: %s", err, string(output))
+	}
+	logFn("Deployment completed successfully.")
 
 	return logs, nil
 }
