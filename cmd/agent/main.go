@@ -296,7 +296,7 @@ func checkAPIConnection(cfg config.Config) string {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
-		return "connected (online)"
+		return "connected"
 	}
 	return fmt.Sprintf("disconnected (HTTP status %d)", resp.StatusCode)
 }

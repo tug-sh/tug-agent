@@ -895,10 +895,11 @@ func (r *Runtime) executeCommand(
 		}()
 		return []string{"Agent binary updated successfully. Service restarting..."}, nil
 	case "disconnect":
-		if err := RunDetachedUninstall(command.CleanDockerResources); err != nil {
-			return nil, err
-		}
 		go func() {
+			time.Sleep(1500 * time.Millisecond)
+			if err := RunDetachedUninstall(command.CleanDockerResources); err != nil {
+				log.Printf("disconnect uninstall failed: %v", err)
+			}
 			time.Sleep(500 * time.Millisecond)
 			os.Exit(0)
 		}()
