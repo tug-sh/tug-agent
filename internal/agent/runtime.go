@@ -218,11 +218,9 @@ func (r *Runtime) connectAndServe(ctx context.Context) (bool, error) {
 	defer r.closeAllTerminals()
 	r.debugf("websocket connected")
 	sessionStartedAt := time.Now()
-	const pongWait = 45 * time.Second
 	const pingPeriod = 20 * time.Second
-	_ = conn.SetReadDeadline(time.Now().Add(pongWait))
+	_ = conn.SetReadDeadline(time.Time{})
 	conn.SetPongHandler(func(string) error {
-		_ = conn.SetReadDeadline(time.Now().Add(pongWait))
 		return nil
 	})
 
@@ -267,12 +265,17 @@ func (r *Runtime) connectAndServe(ctx context.Context) (bool, error) {
 			Type  string `json:"type"`
 			Error string `json:"error"`
 		}
-		if metaErr := json.Unmarshal(message, &meta); metaErr == nil && strings.EqualFold(strings.TrimSpace(meta.Type), "auth_error") {
-			details := strings.TrimSpace(meta.Error)
-			if details == "" {
-				details = "unauthorized agent connection"
+		if metaErr := json.Unmarshal(message, &meta); metaErr == nil {
+			switch strings.ToLower(strings.TrimSpace(meta.Type)) {
+			case "auth_error":
+				details := strings.TrimSpace(meta.Error)
+				if details == "" {
+					details = "unauthorized agent connection"
+				}
+				return false, markPendingAuth(fmt.Errorf("websocket authorization rejected: %s; token may be pending pairing in dashboard", details))
+			case "keepalive", "ping":
+				continue
 			}
-			return false, markPendingAuth(fmt.Errorf("websocket authorization rejected: %s; token may be pending pairing in dashboard", details))
 		}
 		if r.config.ProtocolV2Enabled {
 			var ack inboundAckV2

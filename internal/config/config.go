@@ -27,7 +27,7 @@ type Config struct {
 	ProtocolV2QueuePath string
 }
 
-const defaultAgentVersion = "1.0.6"
+const defaultAgentVersion = "1.0.7"
 const (
 	defaultTrafficProfile = "default"
 	debugTrafficProfile   = "debug"
@@ -69,7 +69,7 @@ func Load() Config {
 		ReconnectBaseDelay:  envDurationOrDefault("TUG_AGENT_RECONNECT_BASE_DELAY", reconnectBaseDefault),
 		ReconnectMaxDelay:   envDurationOrDefault("TUG_AGENT_RECONNECT_MAX_DELAY", reconnectMaxDefault),
 		ReconnectJitterPct:  envIntOrDefault("TUG_AGENT_RECONNECT_JITTER_PCT", reconnectJitterDefault),
-		ProtocolV2Enabled:   envBoolOrDefault("TUG_PROTOCOL_V2_ENABLED", true),
+		ProtocolV2Enabled:   envBoolOrDefault("TUG_PROTOCOL_V2_ENABLED", false),
 		ProtocolV2QueuePath: envOrDefault("TUG_PROTOCOL_V2_QUEUE_PATH", ""),
 	}
 	if cfg.HeartbeatInterval < 5*time.Second {
