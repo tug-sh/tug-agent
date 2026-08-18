@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -257,6 +258,35 @@ func loadAgentEnvFile() error {
 	return nil
 }
 
+func checkAPIConnection(cfg config.Config) string {
+	wsURL := strings.TrimSpace(cfg.APIWebSocketURL)
+	if wsURL == "" {
+		return "disconnected (ws_url not set)"
+	}
+	apiBase := strings.Replace(wsURL, "wss://", "https://", 1)
+	apiBase = strings.Replace(apiBase, "ws://", "http://", 1)
+	if idx := strings.Index(apiBase, "/ws/agents"); idx != -1 {
+		apiBase = apiBase[:idx]
+	}
+	versionEndpoint := strings.TrimRight(apiBase, "/") + "/v1/version"
+
+	client := &http.Client{Timeout: 4 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, versionEndpoint, nil)
+	if err != nil {
+		return fmt.Sprintf("disconnected (invalid url: %v)", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Sprintf("disconnected (unreachable: %v)", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		return "connected (online)"
+	}
+	return fmt.Sprintf("disconnected (HTTP status %d)", resp.StatusCode)
+}
+
 func runStatus() error {
 	if err := loadAgentEnvFile(); err != nil {
 		return err
@@ -284,6 +314,7 @@ func runStatus() error {
 	fmt.Printf("version: v%s\n", cfg.AgentVersion)
 	fmt.Printf("service: %s\n", serviceState)
 	fmt.Printf("initialized: %t\n", initialized)
+	fmt.Printf("api_connection: %s\n", checkAPIConnection(cfg))
 	fmt.Printf("server_id: %s\n", fallbackValue(cfg.ServerID, "(not set)"))
 	fmt.Printf("agent_token: %s\n", tokenPreview)
 	fmt.Printf("ws_url: %s\n", fallbackValue(cfg.APIWebSocketURL, "(not set)"))
