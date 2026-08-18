@@ -61,7 +61,22 @@ tug stop
 tug --stop
 ```
 
-### 6. Disconnect
+### 6. Restart Service
+Restarts the systemd service (`systemctl restart tug-agent`):
+```bash
+tug restart
+# or:
+tug --restart
+```
+
+### 7. Logs
+Prints the last 100 lines of `agent.log`. Pass a number to change the limit:
+```bash
+tug logs
+tug logs 250
+```
+
+### 8. Disconnect
 Clears connection tokens and configuration. Useful if you want to pair the VPS with another account:
 ```bash
 tug disconnect
@@ -69,7 +84,7 @@ tug disconnect
 tug --disconnect
 ```
 
-### 7. Uninstall (Remove)
+### 9. Uninstall (Remove)
 Removes the agent from the system, cleans up systemd files, and sweeps the floor:
 ```bash
 tug remove

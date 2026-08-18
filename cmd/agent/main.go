@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -30,6 +31,7 @@ func main() {
 	startMode := flag.Bool("start", false, "Start agent service in background (initiates connection setup if not configured, `tug start`)")
 	statusMode := flag.Bool("status", false, "Show agent status (`tug status`)")
 	stopMode := flag.Bool("stop", false, "Stop agent service (`tug stop`)")
+	restartMode := flag.Bool("restart", false, "Restart agent service (`tug restart`)")
 	disconnectMode := flag.Bool("disconnect", false, "Disconnect agent from dashboard (`tug disconnect`)")
 	removeMode := flag.Bool("remove", false, "Uninstall agent and remove service (`tug remove`)")
 	updateMode := flag.Bool("update", false, "Update agent binary to the latest version (`tug update`)")
@@ -98,6 +100,18 @@ func main() {
 			log.Fatalf("stop failed: %v", err)
 		}
 		fmt.Println("Agent stopped.")
+		return
+	}
+	if *restartMode || hasCommand(flag.Args(), "restart") {
+		if err := runRestart(cfg); err != nil {
+			log.Fatalf("restart failed: %v", err)
+		}
+		return
+	}
+	if hasCommand(flag.Args(), "logs") {
+		if err := runLogs(parseLogsLimit(flag.Args())); err != nil {
+			log.Fatalf("logs failed: %v", err)
+		}
 		return
 	}
 	if *disconnectMode || hasCommand(flag.Args(), "disconnect") {
@@ -322,6 +336,113 @@ func runStatus() error {
 	return nil
 }
 
+const defaultAgentLogLines = 100
+const maxAgentLogLines = 10000
+
+func agentLogPath() string {
+	return filepath.Join(agent.GetDataDir(), "logs", "agent.log")
+}
+
+func parseLogsLimit(args []string) int {
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(args[i])
+		if arg == "" || arg == "logs" {
+			continue
+		}
+		if n, err := strconv.Atoi(arg); err == nil {
+			return clampLogLimit(n)
+		}
+	}
+	return defaultAgentLogLines
+}
+
+func clampLogLimit(n int) int {
+	if n < 1 {
+		return defaultAgentLogLines
+	}
+	if n > maxAgentLogLines {
+		return maxAgentLogLines
+	}
+	return n
+}
+
+func tailFileLines(path string, limit int) ([]string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	size := info.Size()
+	if size == 0 {
+		return []string{}, nil
+	}
+
+	const chunkSize = 8192
+	var collected []byte
+	offset := size
+	newlines := 0
+	for offset > 0 && newlines <= limit {
+		readSize := int64(chunkSize)
+		if readSize > offset {
+			readSize = offset
+		}
+		offset -= readSize
+		buf := make([]byte, readSize)
+		if _, err := file.ReadAt(buf, offset); err != nil && !errors.Is(err, io.EOF) {
+			return nil, err
+		}
+		collected = append(buf, collected...)
+		newlines = bytes.Count(collected, []byte{'\n'})
+	}
+
+	text := strings.ReplaceAll(string(collected), "\r\n", "\n")
+	lines := strings.Split(text, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) > limit {
+		lines = lines[len(lines)-limit:]
+	}
+	return lines, nil
+}
+
+func runLogs(limit int) error {
+	path := agentLogPath()
+	lines, err := tailFileLines(path, limit)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("log file not found: %s", path)
+		}
+		return err
+	}
+	if len(lines) == 0 {
+		fmt.Printf("No log lines in %s\n", path)
+		return nil
+	}
+	for _, line := range lines {
+		fmt.Println(line)
+	}
+	return nil
+}
+
+func runRestart(cfg config.Config) error {
+	initialized := strings.TrimSpace(cfg.ServerID) != "" && strings.TrimSpace(cfg.AgentToken) != ""
+	if !initialized {
+		return fmt.Errorf("agent is not initialized; run `tug init` first")
+	}
+	fmt.Println("Restarting tug agent service...")
+	msg := tryRestartAgentService()
+	if strings.Contains(strings.ToLower(msg), "failed") {
+		return fmt.Errorf("%s", msg)
+	}
+	fmt.Printf("   %s\n", msg)
+	return nil
+}
+
 func stopAgentService() error {
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return fmt.Errorf("systemctl not available")
@@ -480,6 +601,8 @@ func printHelp(version string) {
 	fmt.Println("  \033[1;37mstart\033[0m       Start background agent service (`systemctl start tug-agent`)")
 	fmt.Println("  \033[1;37mstatus\033[0m      Show agent connection status and service health")
 	fmt.Println("  \033[1;37mstop\033[0m        Stop agent background service (`systemctl stop tug-agent`)")
+	fmt.Println("  \033[1;37mrestart\033[0m     Restart agent background service (`systemctl restart tug-agent`)")
+	fmt.Println("  \033[1;37mlogs\033[0m        Show last 100 agent log lines (`tug logs [n]`)")
 	fmt.Println("  \033[1;37mupdate\033[0m      Update agent binary to the latest release")
 	fmt.Println("  \033[1;37mdisconnect\033[0m  Disconnect agent from dashboard and reset token")
 	fmt.Println("  \033[1;37mremove\033[0m      Uninstall agent and remove systemd service")
@@ -487,7 +610,7 @@ func printHelp(version string) {
 	fmt.Println("  \033[1;37mrun\033[0m         Run agent in daemon worker mode (used by systemd)")
 	fmt.Println()
 	fmt.Println("\033[1;33mFLAGS:\033[0m")
-	fmt.Println("  --init, --start, --status, --stop, --update, --disconnect, --remove, --version, --help")
+	fmt.Println("  --init, --start, --status, --stop, --restart, --update, --disconnect, --remove, --version, --help")
 	fmt.Println()
 }
 
