@@ -45,6 +45,34 @@ func TestDurableEventQueueV2EnqueueAckAndReload(t *testing.T) {
 	}
 }
 
+func TestDurableEventQueueV2CoalesceUnsent(t *testing.T) {
+	queuePath := filepath.Join(t.TempDir(), "queue.json")
+	q := newDurableEventQueueV2(queuePath)
+	first := newOutboundEnvelopeV2()
+	first.MessageID = "m1"
+	first.Entity = entityContainer
+	first.Action = actionStatusChanged
+	first.Payload = []byte(`{"id":"c1","status":"running"}`)
+	if _, err := q.enqueueCoalesced(first, "container:c1"); err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+	second := newOutboundEnvelopeV2()
+	second.MessageID = "m2"
+	second.Entity = entityContainer
+	second.Action = actionStatusChanged
+	second.Payload = []byte(`{"id":"c1","status":"stopped"}`)
+	item, err := q.enqueueCoalesced(second, "container:c1")
+	if err != nil {
+		t.Fatalf("coalesce failed: %v", err)
+	}
+	if q.pendingCount() != 1 {
+		t.Fatalf("expected coalesced pending=1, got %d", q.pendingCount())
+	}
+	if string(item.Envelope.Payload) != string(second.Payload) {
+		t.Fatalf("expected replaced payload")
+	}
+}
+
 func TestDurableEventQueueV2RetryScheduling(t *testing.T) {
 	queuePath := filepath.Join(t.TempDir(), "queue.json")
 	q := newDurableEventQueueV2(queuePath)

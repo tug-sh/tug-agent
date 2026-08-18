@@ -24,8 +24,10 @@ func TestAgentHandshake(t *testing.T) {
 	handshakeReceived := make(chan Handshake, 1)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Expect the token and server_id in query params
-		token := r.URL.Query().Get("token")
+		token := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		if token == "" {
+			token = r.URL.Query().Get("token")
+		}
 		serverID := r.URL.Query().Get("server_id")
 
 		if token != "test-token" || serverID != "test-server-id" {
@@ -89,6 +91,15 @@ func TestAgentHandshake(t *testing.T) {
 		}
 		if hs.WorkspaceID != "test-workspace-id" {
 			t.Errorf("Expected WorkspaceID 'test-workspace-id', got: %s", hs.WorkspaceID)
+		}
+		hasInboxCap := false
+		for _, capName := range hs.ProtocolCaps {
+			if capName == "command_inbox" {
+				hasInboxCap = true
+			}
+		}
+		if !hasInboxCap {
+			t.Errorf("expected command_inbox protocol cap, got %v", hs.ProtocolCaps)
 		}
 		t.Logf("Successfully received handshake: %+v", hs)
 	case <-ctx.Done():

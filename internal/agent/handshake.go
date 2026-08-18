@@ -30,4 +30,5 @@ type Handshake struct {
 	DockerVersion  string               `json:"docker_version"`
 	Networks       []string             `json:"networks"`
 	Containers     []HandshakeContainer `json:"containers"`
+	ProtocolCaps   []string             `json:"protocol_caps,omitempty"`
 }

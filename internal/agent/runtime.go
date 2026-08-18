@@ -30,6 +30,7 @@ type Runtime struct {
 	updater       *Updater
 	writeMu       sync.Mutex
 	v2Queue       *durableEventQueueV2
+	commandInbox  *commandInbox
 
 	termMu                  sync.Mutex
 	terminals               map[string]*TerminalSession
@@ -115,6 +116,7 @@ func NewRuntime(cfg config.Config) (*Runtime, error) {
 		dockerManager:           NewDockerManager(),
 		updater:                 NewUpdater(),
 		v2Queue:                 queue,
+		commandInbox:            newCommandInbox(filepath.Join(GetDataDir(), "agent-command-inbox.json")),
 		terminals:               make(map[string]*TerminalSession),
 		lastContainerDeltaState: map[string]string{},
 		lastAckProgressAt:       time.Now(),
@@ -195,14 +197,15 @@ func (r *Runtime) connectAndServe(ctx context.Context) (bool, error) {
 	if strings.TrimSpace(r.config.AgentToken) == "" {
 		return false, fmt.Errorf("agent token is missing; run `tug --init`")
 	}
-	url := fmt.Sprintf("%s?server_id=%s&token=%s",
+	url := fmt.Sprintf("%s?server_id=%s",
 		r.config.APIWebSocketURL,
 		r.config.ServerID,
-		r.config.AgentToken,
 	)
 	r.debugf("dial websocket: %s", url)
 
-	conn, response, err := websocket.DefaultDialer.DialContext(ctx, url, http.Header{})
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer "+r.config.AgentToken)
+	conn, response, err := websocket.DefaultDialer.DialContext(ctx, url, headers)
 	if err != nil {
 		if response != nil && (response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden) {
 			return false, markPendingAuth(fmt.Errorf("websocket authorization rejected (status %d); token may be pending pairing in dashboard", response.StatusCode))
@@ -215,6 +218,13 @@ func (r *Runtime) connectAndServe(ctx context.Context) (bool, error) {
 	defer r.closeAllTerminals()
 	r.debugf("websocket connected")
 	sessionStartedAt := time.Now()
+	const pongWait = 45 * time.Second
+	const pingPeriod = 20 * time.Second
+	_ = conn.SetReadDeadline(time.Now().Add(pongWait))
+	conn.SetPongHandler(func(string) error {
+		_ = conn.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
 
 	if err := r.sendHandshake(conn, true); err != nil {
 		return isStableSession(sessionStartedAt), err
@@ -227,6 +237,7 @@ func (r *Runtime) connectAndServe(ctx context.Context) (bool, error) {
 		<-sessionCtx.Done()
 		_ = conn.Close()
 	}()
+	go r.periodicWSPing(sessionCtx, conn, pingPeriod)
 	heartbeatInterval := r.config.HeartbeatInterval
 	if heartbeatInterval <= 0 {
 		heartbeatInterval = 30 * time.Second
@@ -293,6 +304,24 @@ func (r *Runtime) connectAndServe(ctx context.Context) (bool, error) {
 		}
 		r.debugf("received command: type=%s command_id=%s", command.Type, command.CommandID)
 		go func(cmd inboundCommand) {
+			if r.replayIdempotentCommand(conn, cmd) {
+				return
+			}
+			if cmd.CommandID != "" && !isStreamCommandType(cmd.Type) {
+				_ = r.writeJSON(conn, outboundCommandProgress{
+					Type:      "command_progress",
+					CommandID: cmd.CommandID,
+					Status:    "received",
+					ServerID:  r.config.ServerID,
+				})
+				r.commandInbox.markRunning(cmd.CommandID)
+				_ = r.writeJSON(conn, outboundCommandProgress{
+					Type:      "command_progress",
+					CommandID: cmd.CommandID,
+					Status:    "running",
+					ServerID:  r.config.ServerID,
+				})
+			}
 			var payload json.RawMessage
 			logs, err := r.executeCommand(ctx, conn, cmd, &payload)
 			if cmd.CommandID != "" {
@@ -306,9 +335,25 @@ func (r *Runtime) connectAndServe(ctx context.Context) (bool, error) {
 				if err != nil {
 					result.Error = err.Error()
 				}
+				if !isStreamCommandType(cmd.Type) {
+					r.commandInbox.markResult(result)
+				}
 				if writeErr := r.writeJSON(conn, result); writeErr != nil {
 					log.Printf("cannot send command result for command_id=%s: %v", cmd.CommandID, writeErr)
 				}
+				status := "succeeded"
+				if err != nil {
+					status = "failed"
+				}
+				_ = r.writeJSON(conn, outboundCommandProgress{
+					Type:      "command_progress",
+					CommandID: cmd.CommandID,
+					Status:    status,
+					Error:     result.Error,
+					Logs:      logs,
+					Payload:   payload,
+					ServerID:  r.config.ServerID,
+				})
 			}
 			if err != nil {
 				log.Printf("command %s (id=%s) failed: %v", cmd.Type, cmd.CommandID, err)
@@ -351,21 +396,15 @@ func (r *Runtime) periodicQueueSelfHeal(ctx context.Context, conn *websocket.Con
 				r.debugf("protocol v2 self-heal reset failed: %v", resetErr)
 				continue
 			}
-			if dropped == 0 {
-				continue
-			}
-			r.containerDeltaStateMu.Lock()
-			r.lastContainerDeltaState = map[string]string{}
-			r.containerDeltaStateMu.Unlock()
 			r.ackStateMu.Lock()
 			r.lastQueueResetAt = now
 			r.lastAckProgressAt = now
 			r.ackStateMu.Unlock()
 			r.debugf(
-				"protocol v2 self-heal reset applied: dropped=%d last_ack_seq=%d pending_before=%d",
+				"protocol v2 self-heal reconnect: dropped_signals=%d last_ack_seq=%d pending=%d",
 				dropped,
 				lastAckSeq,
-				pending,
+				r.v2Queue.pendingCount(),
 			)
 			if err := r.sendHandshake(conn, true); err != nil {
 				r.debugf("protocol v2 self-heal handshake failed: %v", err)
@@ -609,10 +648,74 @@ func (r *Runtime) enqueueV2ContainerDeltaItem(item HandshakeContainer) {
 	env.Entity = entityContainer
 	env.Action = actionStatusChanged
 	env.Payload = json.RawMessage(rawPayload)
-	if _, err := r.v2Queue.enqueue(env); err != nil {
+	if _, err := r.v2Queue.enqueueCoalesced(env, "container:"+containerID); err != nil {
 		r.debugf("protocol v2 container delta enqueue failed: %v", err)
 		return
 	}
+}
+
+func (r *Runtime) periodicWSPing(ctx context.Context, conn *websocket.Conn, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			r.writeMu.Lock()
+			_ = conn.SetWriteDeadline(time.Now().Add(8 * time.Second))
+			err := conn.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(8*time.Second))
+			_ = conn.SetWriteDeadline(time.Time{})
+			r.writeMu.Unlock()
+			if err != nil {
+				r.debugf("websocket ping failed: %v", err)
+				_ = conn.Close()
+				return
+			}
+		}
+	}
+}
+
+func isStreamCommandType(commandType string) bool {
+	switch commandType {
+	case "terminal_start", "terminal_input", "terminal_resize", "terminal_stop", "container_logs_tail":
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *Runtime) replayIdempotentCommand(conn *websocket.Conn, cmd inboundCommand) bool {
+	if r.commandInbox == nil || cmd.CommandID == "" || isStreamCommandType(cmd.Type) {
+		return false
+	}
+	receipt, ok := r.commandInbox.get(cmd.CommandID)
+	if !ok {
+		return false
+	}
+	if receipt.Status == "succeeded" || receipt.Status == "failed" {
+		_ = r.writeJSON(conn, receipt.Result)
+		_ = r.writeJSON(conn, outboundCommandProgress{
+			Type:      "command_progress",
+			CommandID: cmd.CommandID,
+			Status:    receipt.Status,
+			Error:     receipt.Result.Error,
+			Logs:      receipt.Result.Logs,
+			Payload:   receipt.Result.Payload,
+			ServerID:  r.config.ServerID,
+		})
+		return true
+	}
+	if receipt.Status == "running" {
+		_ = r.writeJSON(conn, outboundCommandProgress{
+			Type:      "command_progress",
+			CommandID: cmd.CommandID,
+			Status:    "running",
+			ServerID:  r.config.ServerID,
+		})
+		return true
+	}
+	return false
 }
 
 func (r *Runtime) writeJSON(conn *websocket.Conn, payload any) error {
@@ -670,6 +773,16 @@ type outboundCommandResult struct {
 	Error     string          `json:"error,omitempty"`
 	Logs      []string        `json:"logs,omitempty"`
 	Payload   json.RawMessage `json:"payload,omitempty"`
+}
+
+type outboundCommandProgress struct {
+	Type      string          `json:"type"`
+	CommandID string          `json:"command_id"`
+	Status    string          `json:"status"`
+	Error     string          `json:"error,omitempty"`
+	Logs      []string        `json:"logs,omitempty"`
+	Payload   json.RawMessage `json:"payload,omitempty"`
+	ServerID  string          `json:"server_id,omitempty"`
 }
 
 type outboundHeartbeat struct {
@@ -1256,6 +1369,7 @@ func (r *Runtime) buildHandshake() (Handshake, error) {
 		DockerVersion: dockerVersion,
 		Networks:      networks,
 		Containers:    containers,
+		ProtocolCaps:  []string{"command_inbox", "ws_ping", "event_class"},
 	}, nil
 }
 

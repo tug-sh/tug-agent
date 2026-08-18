@@ -39,6 +39,7 @@ type outboundEventEnvelopeV2 struct {
 	Action          eventAction     `json:"action"`
 	Seq             uint64          `json:"seq"`
 	SentAtUnixMS    int64           `json:"sent_at_unix_ms"`
+	Class           string          `json:"class,omitempty"`
 	Payload         json.RawMessage `json:"payload,omitempty"`
 	Trace           json.RawMessage `json:"trace,omitempty"`
 }
@@ -68,5 +69,6 @@ func newOutboundEnvelopeV2() outboundEventEnvelopeV2 {
 	return outboundEventEnvelopeV2{
 		ProtocolVersion: protocolVersionV2,
 		SentAtUnixMS:    time.Now().UnixMilli(),
+		Class:           eventClassFact,
 	}
 }
