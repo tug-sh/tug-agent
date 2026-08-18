@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 func (r *Runtime) handleGitDeploy(ctx context.Context, cmd inboundCommand) ([]string, error) {
@@ -137,9 +138,12 @@ func (r *Runtime) handleGitDeploy(ctx context.Context, cmd inboundCommand) ([]st
 	}
 	
 	if err != nil {
-		return logs, fmt.Errorf("compose up failed: %v, output: %s", err, string(output))
+		deployErr := fmt.Errorf("compose up failed: %v, output: %s", err, string(output))
+		writeDeploymentLog(cmd.ProjectID, cmd.CommandID, logs, deployErr)
+		return logs, deployErr
 	}
 	logFn("Deployment completed successfully.")
+	writeDeploymentLog(cmd.ProjectID, cmd.CommandID, logs, nil)
 
 	return logs, nil
 }
@@ -197,4 +201,40 @@ func syncProjectEnvFile(deployDir string, projectID string, logFn func(string)) 
 		}
 		_ = os.WriteFile(repoEnvPath, []byte(sb.String()), 0644)
 	}
+}
+
+func writeDeploymentLog(projectID string, commandID string, logs []string, deployErr error) {
+	if strings.TrimSpace(projectID) == "" {
+		return
+	}
+	logsDir, err := ResolveSandboxPath(filepath.Join("projects", projectID, "logs"))
+	if err != nil {
+		return
+	}
+	_ = os.MkdirAll(logsDir, 0755)
+
+	now := time.Now()
+	timestampStr := now.Format("20060102-150405")
+	logFile := filepath.Join(logsDir, fmt.Sprintf("deploy-%s.log", timestampStr))
+	latestLogFile := filepath.Join(logsDir, "latest-deploy.log")
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("=== Deployment Log [%s] ===\n", now.Format("2006-01-02 15:04:05 MST")))
+	sb.WriteString(fmt.Sprintf("Project ID : %s\n", projectID))
+	if commandID != "" {
+		sb.WriteString(fmt.Sprintf("Command ID : %s\n", commandID))
+	}
+	sb.WriteString("--------------------------------------------------------------------------------\n")
+	for _, l := range logs {
+		sb.WriteString(l + "\n")
+	}
+	if deployErr != nil {
+		sb.WriteString(fmt.Sprintf("\n[RESULT] FAILED: %v\n", deployErr))
+	} else {
+		sb.WriteString("\n[RESULT] SUCCESS: Deployment completed successfully.\n")
+	}
+
+	content := []byte(sb.String())
+	_ = os.WriteFile(logFile, content, 0644)
+	_ = os.WriteFile(latestLogFile, content, 0644)
 }

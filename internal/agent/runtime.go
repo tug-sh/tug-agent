@@ -1064,6 +1064,7 @@ func (r *Runtime) executeCommand(
 		deployCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
 		logs, deployErr := r.dockerManager.DeployCompose(deployCtx, composePath, command.Command)
+		writeDeploymentLog(command.ProjectID, command.CommandID, logs, deployErr)
 		if deployErr != nil {
 			return logs, deployErr
 		}
