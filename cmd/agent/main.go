@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -27,28 +26,8 @@ import (
 )
 
 func main() {
-	initMode := flag.Bool("init", false, "Generate connection key and dashboard URL (`tug init`)")
-	startMode := flag.Bool("start", false, "Start agent service in background (initiates connection setup if not configured, `tug start`)")
-	statusMode := flag.Bool("status", false, "Show agent status (`tug status`)")
-	stopMode := flag.Bool("stop", false, "Stop agent service (`tug stop`)")
-	restartMode := flag.Bool("restart", false, "Restart agent service (`tug restart`)")
-	disconnectMode := flag.Bool("disconnect", false, "Disconnect agent from dashboard (`tug disconnect`)")
-	removeMode := flag.Bool("remove", false, "Uninstall agent and remove service (`tug remove`)")
-	updateMode := flag.Bool("update", false, "Update agent binary to the latest version (`tug update`)")
-	versionMode := flag.Bool("version", false, "Show agent version (`tug version`)")
-	runMode := flag.Bool("run", false, "Run agent in daemon mode (`tug run`)")
-	helpMode := flag.Bool("help", false, "Show help and available commands")
-	testMode := flag.Bool("test-mode", false, "Run in test mode for updater health check")
-	verbose := flag.Bool("verbose", true, "Enable verbose operation logs")
-
-	flag.Usage = func() {
-		cfg := config.Load()
-		printHelp(cfg.AgentVersion)
-	}
-
-	flag.Parse()
-
-	if *testMode {
+	args := os.Args[1:]
+	if hasToken(args, "--test-mode") {
 		fmt.Println("health-check: ok")
 		return
 	}
@@ -58,93 +37,83 @@ func main() {
 	}
 
 	cfg := config.Load()
+	command := ""
+	if len(args) > 0 && !strings.HasPrefix(strings.TrimSpace(args[0]), "-") {
+		command = strings.TrimSpace(args[0])
+	}
 
-	if *helpMode || hasCommand(flag.Args(), "help") || hasCommand(flag.Args(), "-h") || hasCommand(flag.Args(), "--help") {
+	switch command {
+	case "help":
 		printHelp(cfg.AgentVersion)
 		return
-	}
-
-	if *versionMode || hasCommand(flag.Args(), "version") {
+	case "version":
 		fmt.Printf("tug-agent v%s\n", cfg.AgentVersion)
 		return
-	}
-
-	if *updateMode || hasCommand(flag.Args(), "update") {
+	case "update":
 		if err := runUpdate(cfg); err != nil {
 			log.Fatalf("update failed: %v", err)
 		}
 		fmt.Println("Agent updated successfully and restarted.")
 		return
-	}
-
-	if *initMode || hasCommand(flag.Args(), "init") {
+	case "init":
 		if err := runInit(cfg); err != nil {
 			log.Fatalf("init failed: %v", err)
 		}
 		return
-	}
-	if *startMode || hasCommand(flag.Args(), "start") {
+	case "start":
 		if err := runStart(cfg); err != nil {
 			log.Fatalf("start failed: %v", err)
 		}
 		return
-	}
-	if *statusMode || hasCommand(flag.Args(), "status") {
+	case "status":
 		if err := runStatus(); err != nil {
 			log.Fatalf("status failed: %v", err)
 		}
 		return
-	}
-	if *stopMode || hasCommand(flag.Args(), "stop") {
+	case "stop":
 		if err := stopAgentService(); err != nil {
 			log.Fatalf("stop failed: %v", err)
 		}
 		fmt.Println("Agent stopped.")
 		return
-	}
-	if *restartMode || hasCommand(flag.Args(), "restart") {
+	case "restart":
 		if err := runRestart(cfg); err != nil {
 			log.Fatalf("restart failed: %v", err)
 		}
 		return
-	}
-	if hasCommand(flag.Args(), "logs") {
-		if err := runLogs(parseLogsLimit(flag.Args())); err != nil {
+	case "logs":
+		if err := runLogs(parseLogsLimit(args)); err != nil {
 			log.Fatalf("logs failed: %v", err)
 		}
 		return
-	}
-	if *disconnectMode || hasCommand(flag.Args(), "disconnect") {
+	case "disconnect":
 		if err := stopAgentService(); err != nil {
 			log.Printf("warning: cannot stop service automatically: %v", err)
 		}
 		if err := clearAgentConnectionState(cfg); err != nil {
 			log.Fatalf("disconnect failed: %v", err)
 		}
-		fmt.Println("Agent disconnected from dashboard. Run `tug --init` to reconnect.")
+		fmt.Println("Agent disconnected from dashboard. Run `tug init` to reconnect.")
 		return
-	}
-	if *removeMode || hasCommand(flag.Args(), "remove") {
+	case "remove":
 		if err := agent.RunDetachedUninstall(false); err != nil {
 			log.Fatalf("remove failed: %v", err)
 		}
 		fmt.Println("Agent uninstall started in background.")
 		return
-	}
-
-	isRunDaemon := *runMode || hasCommand(flag.Args(), "run") || hasCommand(flag.Args(), "daemon") || hasCommand(flag.Args(), "run-service") || hasCommand(flag.Args(), "service")
-
-	if isSystemdService() || (!isTerminal(os.Stdout) && !isTerminal(os.Stdin) && len(flag.Args()) == 0 && flag.NFlag() == 0) {
-		isRunDaemon = true
-	}
-
-	if !isRunDaemon {
+	case "run", "daemon", "run-service", "service":
+	case "":
+		if !(isSystemdService() || (!isTerminal(os.Stdout) && !isTerminal(os.Stdin))) {
+			printHelp(cfg.AgentVersion)
+			return
+		}
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", command)
 		printHelp(cfg.AgentVersion)
-		return
+		os.Exit(2)
 	}
 
 	cfg = config.Load()
-	cfg.Verbose = *verbose
 
 	logPath := filepath.Join(agent.GetDataDir(), "logs", "agent.log")
 	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err == nil {
@@ -191,11 +160,13 @@ func main() {
 	}
 }
 
-func hasCommand(args []string, command string) bool {
-	if len(args) == 0 {
-		return false
+func hasToken(args []string, token string) bool {
+	for _, arg := range args {
+		if strings.TrimSpace(arg) == token {
+			return true
+		}
 	}
-	return strings.TrimSpace(args[0]) == command
+	return false
 }
 
 func loadAgentEnvFile() error {
@@ -594,7 +565,7 @@ func runUpdate(cfg config.Config) error {
 func printHelp(version string) {
 	fmt.Printf("\033[1;36mtug\033[0m v%s - VPS control center agent\n\n", version)
 	fmt.Println("\033[1;33mUSAGE:\033[0m")
-	fmt.Println("  tug <command> [flags]")
+	fmt.Println("  tug <command>")
 	fmt.Println()
 	fmt.Println("\033[1;33mCOMMANDS:\033[0m")
 	fmt.Println("  \033[1;37minit\033[0m        Generate connection pairing key and dashboard link")
@@ -608,9 +579,6 @@ func printHelp(version string) {
 	fmt.Println("  \033[1;37mremove\033[0m      Uninstall agent and remove systemd service")
 	fmt.Println("  \033[1;37mversion\033[0m     Display current agent version")
 	fmt.Println("  \033[1;37mrun\033[0m         Run agent in daemon worker mode (used by systemd)")
-	fmt.Println()
-	fmt.Println("\033[1;33mFLAGS:\033[0m")
-	fmt.Println("  --init, --start, --status, --stop, --restart, --update, --disconnect, --remove, --version, --help")
 	fmt.Println()
 }
 

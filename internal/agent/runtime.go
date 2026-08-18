@@ -97,8 +97,8 @@ func (r *Runtime) logReconnectRecoveryHint(reason error) {
 	}
 	log.Printf("reconnect disabled: %v", reason)
 	log.Printf("recovery steps:")
-	log.Printf("1) Verify agent state: sudo tug --status")
-	log.Printf("2) Re-initialize token and link: sudo tug --init")
+	log.Printf("1) Verify agent state: sudo tug status")
+	log.Printf("2) Re-initialize token and link: sudo tug init")
 	log.Printf("3) Open generated /connect/<token> URL in dashboard to authorize this host")
 	log.Printf("4) Ensure %s contains valid TUG_AGENT_TOKEN", envPath)
 }
@@ -192,10 +192,10 @@ func (r *Runtime) connectAndServe(ctx context.Context) (bool, error) {
 	}
 
 	if strings.TrimSpace(r.config.ServerID) == "" {
-		return false, fmt.Errorf("server_id cannot be derived from token; run `tug --init`")
+		return false, fmt.Errorf("server_id cannot be derived from token; run `tug init`")
 	}
 	if strings.TrimSpace(r.config.AgentToken) == "" {
-		return false, fmt.Errorf("agent token is missing; run `tug --init`")
+		return false, fmt.Errorf("agent token is missing; run `tug init`")
 	}
 	url := fmt.Sprintf("%s?server_id=%s",
 		r.config.APIWebSocketURL,

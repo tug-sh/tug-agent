@@ -19,54 +19,42 @@ Best of all — it is completely **stateless**. The entire state is kept securel
 
 ## 🛠️ CLI Cheat Sheet
 
-You control the agent using CLI flags or positional sub-commands (invokable as `tug` or `tug-agent`):
+You control the agent with positional commands (`tug` or `tug-agent`):
 
 ### 1. Start Service / Connect
 Forces starting the agent service in the background. If no configuration exists, initiates a new connection setup:
 ```bash
 tug start
-# or:
-tug --start
 ```
 
 ### 2. Initialization (First Run)
 Generates a unique connection token and a dashboard link to pair your VPS:
 ```bash
 tug init
-# or:
-tug --init
 ```
 
 ### 3. Status Check
 Check if the agent is active, its version, and connection status:
 ```bash
 tug status
-# or:
-tug --status
 ```
 
 ### 4. Version Check
-Check current agent version (v1.0.2):
+Check current agent version:
 ```bash
 tug version
-# or:
-tug --version
 ```
 
 ### 5. Stop Service
 Politely stops the systemd service:
 ```bash
 tug stop
-# or:
-tug --stop
 ```
 
 ### 6. Restart Service
 Restarts the systemd service (`systemctl restart tug-agent`):
 ```bash
 tug restart
-# or:
-tug --restart
 ```
 
 ### 7. Logs
@@ -80,16 +68,12 @@ tug logs 250
 Clears connection tokens and configuration. Useful if you want to pair the VPS with another account:
 ```bash
 tug disconnect
-# or:
-tug --disconnect
 ```
 
 ### 9. Uninstall (Remove)
 Removes the agent from the system, cleans up systemd files, and sweeps the floor:
 ```bash
 tug remove
-# or:
-tug --remove
 ```
 
 ---
@@ -118,9 +102,9 @@ If you want to hack on the agent locally:
    ```bash
    go build -o tug-agent ./cmd/agent
    ```
-3. **Run with verbose logs**:
+3. **Run daemon locally**:
    ```bash
-   ./tug-agent --verbose
+   ./tug-agent run
    ```
 
 ### Architecture in 5 Sentences:
