@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -19,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	websocket "github.com/gorilla/websocket"
 	"gopkg.in/natefinch/lumberjack.v2"
 
 	"tug.sh/services/agent/internal/agent"
@@ -248,28 +250,31 @@ func checkAPIConnection(cfg config.Config) string {
 	if wsURL == "" {
 		return "disconnected (ws_url not set)"
 	}
-	apiBase := strings.Replace(wsURL, "wss://", "https://", 1)
-	apiBase = strings.Replace(apiBase, "ws://", "http://", 1)
-	if idx := strings.Index(apiBase, "/ws/agents"); idx != -1 {
-		apiBase = apiBase[:idx]
+	serverID := strings.TrimSpace(cfg.ServerID)
+	token := strings.TrimSpace(cfg.AgentToken)
+	if serverID == "" || token == "" {
+		return "disconnected (not initialized)"
 	}
-	versionEndpoint := strings.TrimRight(apiBase, "/") + "/v1/version"
 
-	client := &http.Client{Timeout: 4 * time.Second}
-	req, err := http.NewRequest(http.MethodGet, versionEndpoint, nil)
+	dialURL := fmt.Sprintf("%s?server_id=%s", wsURL, url.QueryEscape(serverID))
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer "+token)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+
+	conn, resp, err := websocket.DefaultDialer.DialContext(ctx, dialURL, headers)
 	if err != nil {
-		return fmt.Sprintf("disconnected (invalid url: %v)", err)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
+		if resp != nil {
+			if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusBadRequest {
+				return fmt.Sprintf("disconnected (auth rejected: HTTP %d)", resp.StatusCode)
+			}
+			return fmt.Sprintf("disconnected (HTTP %d)", resp.StatusCode)
+		}
 		return fmt.Sprintf("disconnected (unreachable: %v)", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusOK {
-		return "connected"
-	}
-	return fmt.Sprintf("disconnected (HTTP status %d)", resp.StatusCode)
+	conn.Close()
+	return "connected"
 }
 
 func runStatus() error {
