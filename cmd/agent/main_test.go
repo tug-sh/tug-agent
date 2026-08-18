@@ -47,7 +47,7 @@ func TestRunStart_Configured(t *testing.T) {
 
 func TestAgentVersion(t *testing.T) {
 	cfg := config.Load()
-	if cfg.AgentVersion != "1.0.5" {
-		t.Errorf("expected AgentVersion to be 1.0.5, got: %s", cfg.AgentVersion)
+	if cfg.AgentVersion != "1.0.6" {
+		t.Errorf("expected AgentVersion to be 1.0.6, got: %s", cfg.AgentVersion)
 	}
 }

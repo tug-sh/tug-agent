@@ -365,7 +365,7 @@ func (r *Runtime) connectAndServe(ctx context.Context) (bool, error) {
 func (r *Runtime) periodicQueueSelfHeal(ctx context.Context, conn *websocket.Conn) {
 	const (
 		stallThreshold = 45 * time.Second
-		cooldown       = 30 * time.Second
+		cooldown       = 2 * time.Minute
 		minPending     = 8
 	)
 	ticker := time.NewTicker(45 * time.Second)
@@ -401,16 +401,19 @@ func (r *Runtime) periodicQueueSelfHeal(ctx context.Context, conn *websocket.Con
 			r.lastAckProgressAt = now
 			r.ackStateMu.Unlock()
 			r.debugf(
-				"protocol v2 self-heal reconnect: dropped_signals=%d last_ack_seq=%d pending=%d",
+				"protocol v2 self-heal reset applied: dropped=%d last_ack_seq=%d pending=%d",
 				dropped,
 				lastAckSeq,
 				r.v2Queue.pendingCount(),
 			)
+			if r.v2Queue.hasPendingSnapshot() {
+				continue
+			}
 			if err := r.sendHandshake(conn, true); err != nil {
 				r.debugf("protocol v2 self-heal handshake failed: %v", err)
+				_ = conn.Close()
+				return
 			}
-			_ = conn.Close()
-			return
 		}
 	}
 }
@@ -480,7 +483,7 @@ func (r *Runtime) sendHandshake(conn *websocket.Conn, enqueueV2Snapshot bool) er
 	}
 	if r.config.ProtocolV2Enabled && enqueueV2Snapshot {
 		pending := r.v2Queue.pendingCount()
-		if pending > 24 {
+		if pending > 24 || r.v2Queue.hasPendingSnapshot() {
 			r.debugf("protocol v2 snapshot enqueue skipped: pending=%d", pending)
 		} else {
 			if err := r.enqueueV2SnapshotFromHandshake(hello); err != nil {
@@ -586,7 +589,7 @@ func (r *Runtime) enqueueAllRunningContainerDeltas(ctx context.Context) {
 	if !r.config.ProtocolV2Enabled || r.v2Queue == nil {
 		return
 	}
-	if r.v2Queue.pendingCount() > 32 {
+	if r.v2Queue.pendingCount() > 8 {
 		r.debugf("protocol v2 container refresh skipped: pending queue is high")
 		return
 	}
@@ -647,6 +650,7 @@ func (r *Runtime) enqueueV2ContainerDeltaItem(item HandshakeContainer) {
 	env.ServerID = r.config.ServerID
 	env.Entity = entityContainer
 	env.Action = actionStatusChanged
+	env.Class = eventClassSignal
 	env.Payload = json.RawMessage(rawPayload)
 	if _, err := r.v2Queue.enqueueCoalesced(env, "container:"+containerID); err != nil {
 		r.debugf("protocol v2 container delta enqueue failed: %v", err)

@@ -364,6 +364,20 @@ func (q *durableEventQueueV2) pendingCount() int {
 	return len(q.itemsBySeq)
 }
 
+func (q *durableEventQueueV2) hasPendingSnapshot() bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for _, item := range q.itemsBySeq {
+		if item == nil {
+			continue
+		}
+		if item.Envelope.Entity == entityRuntime && item.Envelope.Action == actionSnapshot {
+			return true
+		}
+	}
+	return false
+}
+
 func (q *durableEventQueueV2) ackUptoSeq() uint64 {
 	q.mu.Lock()
 	defer q.mu.Unlock()

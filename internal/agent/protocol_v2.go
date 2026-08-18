@@ -59,10 +59,11 @@ type inboundAckV2 struct {
 }
 
 func (ack inboundAckV2) isAck() bool {
-	if strings.TrimSpace(ack.ProtocolVersion) != protocolVersionV2 {
+	if !strings.EqualFold(strings.TrimSpace(ack.Type), "ack") {
 		return false
 	}
-	return strings.EqualFold(strings.TrimSpace(ack.Type), "ack")
+	pv := strings.TrimSpace(ack.ProtocolVersion)
+	return pv == "" || pv == protocolVersionV2
 }
 
 func newOutboundEnvelopeV2() outboundEventEnvelopeV2 {

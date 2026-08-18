@@ -98,3 +98,42 @@ func TestDurableEventQueueV2RetryScheduling(t *testing.T) {
 	}
 }
 
+func TestDurableEventQueueV2ResetDropsSignalsOnly(t *testing.T) {
+	queuePath := filepath.Join(t.TempDir(), "queue.json")
+	q := newDurableEventQueueV2(queuePath)
+
+	snapshot := newOutboundEnvelopeV2()
+	snapshot.MessageID = "snap"
+	snapshot.Entity = entityRuntime
+	snapshot.Action = actionSnapshot
+	if _, err := q.enqueue(snapshot); err != nil {
+		t.Fatalf("enqueue snapshot failed: %v", err)
+	}
+
+	delta := newOutboundEnvelopeV2()
+	delta.MessageID = "delta"
+	delta.Entity = entityContainer
+	delta.Action = actionStatusChanged
+	delta.Class = eventClassSignal
+	if _, err := q.enqueue(delta); err != nil {
+		t.Fatalf("enqueue signal failed: %v", err)
+	}
+	if !q.hasPendingSnapshot() {
+		t.Fatal("expected pending snapshot")
+	}
+
+	dropped, err := q.resetPendingForRecovery()
+	if err != nil {
+		t.Fatalf("reset failed: %v", err)
+	}
+	if dropped != 1 {
+		t.Fatalf("expected dropped=1 signal, got %d", dropped)
+	}
+	if q.pendingCount() != 1 {
+		t.Fatalf("expected snapshot to remain, pending=%d", q.pendingCount())
+	}
+	if !q.hasPendingSnapshot() {
+		t.Fatal("expected snapshot to remain after signal drop")
+	}
+}
+
