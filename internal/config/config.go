@@ -1,12 +1,18 @@
 package config
 
 import (
+	_ "embed"
 	"encoding/base64"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 )
+
+//go:embed VERSION
+var embeddedVersion string
+
+var defaultAgentVersion = strings.TrimSpace(embeddedVersion)
 
 type Config struct {
 	AgentVersion        string
@@ -42,7 +48,6 @@ const (
 	defaultRouterConfigPath = "/etc/caddy/Caddyfile"
 )
 
-const defaultAgentVersion = "1.0.7"
 const (
 	defaultTrafficProfile = "default"
 	debugTrafficProfile   = "debug"
