@@ -16,7 +16,7 @@ import (
 	"tug.sh/services/agent/internal/docker"
 	"tug.sh/services/agent/internal/lifecycle"
 	"tug.sh/services/agent/internal/logging"
-	"tug.sh/services/agent/internal/protocol"
+	"tug.sh/services/agent/internal/outbox"
 	"tug.sh/services/agent/internal/router"
 	"tug.sh/services/agent/internal/sandbox"
 )
@@ -35,7 +35,7 @@ type Runtime struct {
 	router        *router.Router
 	updater       *lifecycle.Updater
 	writeMu       sync.Mutex
-	eventQueue    *protocol.Queue
+	eventQueue    *outbox.Queue
 	commandInbox  *commandInbox
 
 	termMu                  sync.Mutex
@@ -50,11 +50,12 @@ type Runtime struct {
 
 func NewRuntime(cfg config.Config) (*Runtime, error) {
 	logger := LoggerForConfig(cfg)
-	queue := protocol.NewQueue(cfg.ProtocolV2QueuePath)
-	if cfg.ProtocolV2Enabled {
-		if err := queue.Load(); err != nil {
-			logger.Warn("cannot load event queue: %v", err)
-		}
+	queue := outbox.NewQueue(cfg.OutboxPath)
+	// Loading is unconditional now. The queue used to be behind a feature flag,
+	// so an agent started with it off dropped everything the previous run had
+	// not managed to deliver.
+	if err := queue.Load(); err != nil {
+		logger.Warn("cannot load the outbox: %v", err)
 	}
 	dockerManager := docker.NewManager()
 	return &Runtime{
@@ -65,11 +66,18 @@ func NewRuntime(cfg config.Config) (*Runtime, error) {
 		router:                  router.New(dockerManager, router.SpecFromConfig(cfg)),
 		updater:                 lifecycle.NewUpdater(),
 		eventQueue:              queue,
-		commandInbox:            newCommandInbox(filepath.Join(sandbox.DataDir(), "agent-command-inbox.json")),
+		commandInbox:            newCommandInbox(commandInboxPath(cfg)),
 		terminals:               make(map[string]*TerminalSession),
 		lastContainerDeltaState: map[string]string{},
 		lastAckProgressAt:       time.Now(),
 	}, nil
+}
+
+func commandInboxPath(cfg config.Config) string {
+	if path := strings.TrimSpace(cfg.CommandInboxPath); path != "" {
+		return path
+	}
+	return filepath.Join(sandbox.DataDir(), "agent-command-inbox.json")
 }
 
 // LoggerForConfig builds the agent logger from configuration: an explicit

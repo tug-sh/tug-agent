@@ -9,7 +9,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"tug.sh/services/agent/internal/protocol"
+	"tug.sh/pkg/protocol"
 )
 
 const (
@@ -26,27 +26,9 @@ const (
 	containerRefreshBacklogLimit = 8
 )
 
-// newEvent builds an envelope already stamped with this agent's identity, so
-// every producer emits the same routing fields.
-func (runtime *Runtime) newEvent(
-	entity protocol.Entity,
-	action protocol.Action,
-	messageID string,
-) protocol.Envelope {
-	envelope := protocol.NewEnvelope()
-	envelope.MessageID = messageID
-	envelope.ServerID = runtime.config.ServerID
-	envelope.Entity = entity
-	envelope.Action = action
-	return envelope
-}
-
 // consumeAck applies a server acknowledgement to the durable queue. It reports
 // whether the frame was an ack, so the read loop can skip further decoding.
 func (runtime *Runtime) consumeAck(message []byte) bool {
-	if !runtime.config.ProtocolV2Enabled {
-		return false
-	}
 	var ack protocol.Ack
 	if err := json.Unmarshal(message, &ack); err != nil || !ack.IsAck() {
 		return false
@@ -69,37 +51,6 @@ func (runtime *Runtime) consumeAck(message []byte) bool {
 		runtime.eventQueue.PendingCount(),
 	)
 	return true
-}
-
-func (runtime *Runtime) enqueueSnapshotEvent(hello protocol.Handshake) {
-	if runtime.eventQueue == nil {
-		return
-	}
-	pending := runtime.eventQueue.PendingCount()
-	if pending > snapshotBacklogLimit || runtime.eventQueue.HasPendingSnapshot() {
-		runtime.log.Debug("snapshot enqueue skipped: pending=%d", pending)
-		return
-	}
-	rawPayload, err := json.Marshal(hello)
-	if err != nil {
-		runtime.log.Debug("snapshot enqueue failed: %v", err)
-		return
-	}
-	envelope := runtime.newEvent(protocol.EntityRuntime, protocol.ActionSnapshot, fmt.Sprintf("snapshot-%d", time.Now().UnixNano()))
-	envelope.WorkspaceID = strings.TrimSpace(hello.WorkspaceID)
-	envelope.Payload = rawPayload
-	item, err := runtime.eventQueue.Enqueue(envelope)
-	if err != nil {
-		runtime.log.Debug("snapshot enqueue failed: %v", err)
-		return
-	}
-	runtime.log.Debug(
-		"event enqueued: seq=%d entity=%s action=%s pending=%d",
-		item.Envelope.Seq,
-		item.Envelope.Entity,
-		item.Envelope.Action,
-		runtime.eventQueue.PendingCount(),
-	)
 }
 
 // flushEventQueue drains due events onto the socket. A write failure means the
@@ -149,11 +100,8 @@ func (runtime *Runtime) periodicQueueSelfHeal(ctx context.Context, conn *websock
 			dropped,
 			runtime.eventQueue.PendingCount(),
 		)
-		if runtime.eventQueue.HasPendingSnapshot() {
-			return true
-		}
-		if err := runtime.sendHandshake(conn, true); err != nil {
-			return runtime.endSession(conn, "event queue self-heal handshake failed", err)
+		if err := runtime.sendSnapshot(); err != nil {
+			return runtime.endSession(conn, "event queue self-heal snapshot failed", err)
 		}
 		return true
 	})
@@ -177,8 +125,8 @@ func (runtime *Runtime) ackProgressStalled() bool {
 	return lastResetAt.IsZero() || now.Sub(lastResetAt) >= queueResetCooldown
 }
 
-func (runtime *Runtime) enqueueContainerStatusDelta(ctx context.Context, containerID string) {
-	if !runtime.config.ProtocolV2Enabled || runtime.eventQueue == nil || strings.TrimSpace(containerID) == "" {
+func (runtime *Runtime) publishContainerStatus(ctx context.Context, conn *websocket.Conn, containerID string) {
+	if strings.TrimSpace(containerID) == "" {
 		return
 	}
 	listCtx, cancel := context.WithTimeout(ctx, containerListTimeout)
@@ -192,19 +140,12 @@ func (runtime *Runtime) enqueueContainerStatusDelta(ctx context.Context, contain
 		if strings.TrimSpace(item.ID) != strings.TrimSpace(containerID) {
 			continue
 		}
-		runtime.enqueueContainerDelta(item)
+		runtime.publishContainerDelta(conn, item)
 		return
 	}
 }
 
-func (runtime *Runtime) enqueueAllRunningContainerDeltas(ctx context.Context) {
-	if !runtime.config.ProtocolV2Enabled || runtime.eventQueue == nil {
-		return
-	}
-	if runtime.eventQueue.PendingCount() > containerRefreshBacklogLimit {
-		runtime.log.Debug("container refresh skipped: pending queue is high")
-		return
-	}
+func (runtime *Runtime) publishAllContainerStatuses(ctx context.Context, conn *websocket.Conn) {
 	listCtx, cancel := context.WithTimeout(ctx, containerRefreshBudget)
 	defer cancel()
 	containers, err := runtime.dockerManager.ListContainersLite(listCtx)
@@ -215,7 +156,7 @@ func (runtime *Runtime) enqueueAllRunningContainerDeltas(ctx context.Context) {
 	activeIDs := make(map[string]struct{}, len(containers))
 	for _, item := range containers {
 		activeIDs[strings.TrimSpace(item.ID)] = struct{}{}
-		runtime.enqueueContainerDelta(item)
+		runtime.publishContainerDelta(conn, item)
 	}
 	runtime.forgetMissingContainers(activeIDs)
 }
@@ -232,38 +173,40 @@ func (runtime *Runtime) forgetMissingContainers(activeIDs map[string]struct{}) {
 	}
 }
 
-// enqueueContainerDelta emits a container change, skipping containers whose
-// observable state is unchanged since the last delta.
-func (runtime *Runtime) enqueueContainerDelta(item protocol.HandshakeContainer) {
+// publishContainerDelta reports a container change, skipping containers whose
+// observable state is unchanged since the last one.
+//
+// A delta is a signal. It is never queued, because the periodic refresh below
+// re-reports every container within half a minute and a full snapshot repairs
+// anything that slipped through: resending a stale status would be worse than
+// dropping it. The old agent queued these and then spent its recovery logic
+// throwing them back out again.
+func (runtime *Runtime) publishContainerDelta(conn *websocket.Conn, item protocol.HandshakeContainer) {
 	containerID := strings.TrimSpace(item.ID)
-	if containerID == "" {
-		return
-	}
-	if !runtime.containerStateChanged(containerID, item) {
+	if containerID == "" || !runtime.containerStateChanged(containerID, item) {
 		return
 	}
 
-	rawPayload, err := json.Marshal(map[string]any{
-		"id":     containerID,
-		"name":   strings.TrimSpace(item.Name),
-		"status": strings.TrimSpace(item.Status),
-		"image":  strings.TrimSpace(item.Image),
-		"ports":  strings.TrimSpace(item.Ports),
-		"app":    strings.TrimSpace(item.App),
-	})
-	if err != nil {
-		return
+	delta := protocol.ContainerDelta{
+		ID:     containerID,
+		Name:   strings.TrimSpace(item.Name),
+		Status: strings.TrimSpace(item.Status),
+		Image:  strings.TrimSpace(item.Image),
+		Ports:  strings.TrimSpace(item.Ports),
+		App:    strings.TrimSpace(item.App),
 	}
-	envelope := runtime.newEvent(
-		protocol.EntityContainer,
-		protocol.ActionStatusChanged,
-		fmt.Sprintf("container-%s-%d", containerID, time.Now().UnixNano()),
-	)
-	envelope.Class = protocol.ClassSignal
-	envelope.Payload = rawPayload
-	if _, err := runtime.eventQueue.EnqueueCoalesced(envelope, "container:"+containerID); err != nil {
-		runtime.log.Debug("container delta enqueue failed: %v", err)
+	if err := runtime.emitSignal(conn, protocol.EntityContainer, protocol.ActionStatusChanged, delta); err != nil {
+		runtime.log.Debug("cannot send a container delta: %v", err)
+		// The state cache is rolled back so the next pass tries again rather
+		// than deciding nothing has changed.
+		runtime.forgetContainerState(containerID)
 	}
+}
+
+func (runtime *Runtime) forgetContainerState(containerID string) {
+	runtime.containerDeltaStateMu.Lock()
+	defer runtime.containerDeltaStateMu.Unlock()
+	delete(runtime.lastContainerDeltaState, containerID)
 }
 
 func (runtime *Runtime) containerStateChanged(containerID string, item protocol.HandshakeContainer) bool {

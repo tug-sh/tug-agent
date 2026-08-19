@@ -5,13 +5,13 @@ import (
 	"testing"
 	"time"
 
-	"tug.sh/services/agent/internal/protocol"
+	"tug.sh/pkg/protocol"
 )
 
 func TestConsumeAckAdvancesQueue(t *testing.T) {
 	runtime := newTestRuntime(t)
 	for index := 0; index < 3; index++ {
-		if _, err := runtime.eventQueue.Enqueue(protocol.NewEnvelope()); err != nil {
+		if _, err := runtime.eventQueue.Enqueue(protocol.NewEnvelope(protocol.EntityRuntime, protocol.ActionSnapshot)); err != nil {
 			t.Fatalf("enqueue failed: %v", err)
 		}
 	}
@@ -39,16 +39,14 @@ func TestConsumeAckIgnoresOtherFrames(t *testing.T) {
 		t.Error("a malformed frame must not be treated as an ack")
 	}
 
-	runtime.config.ProtocolV2Enabled = false
-	if runtime.consumeAck([]byte(`{"type":"ack","ack_upto_seq":1}`)) {
-		t.Error("acks must be ignored when the event queue is disabled")
-	}
 }
 
-func TestEnqueueSnapshotEvent(t *testing.T) {
+func TestSnapshotIsQueuedOnceWhileOneIsPending(t *testing.T) {
 	runtime := newTestRuntime(t)
-	runtime.enqueueSnapshotEvent(protocol.Handshake{Type: "handshake", ServerID: "srv-test", WorkspaceID: "ws-test"})
 
+	if err := runtime.sendSnapshot(); err != nil {
+		t.Fatalf("cannot queue a snapshot: %v", err)
+	}
 	if runtime.eventQueue.PendingCount() != 1 {
 		t.Fatalf("pending = %d, want 1", runtime.eventQueue.PendingCount())
 	}
@@ -57,54 +55,56 @@ func TestEnqueueSnapshotEvent(t *testing.T) {
 	}
 
 	// A second snapshot on top of a pending one would only grow the backlog.
-	runtime.enqueueSnapshotEvent(protocol.Handshake{Type: "handshake"})
+	if err := runtime.sendSnapshot(); err != nil {
+		t.Fatalf("cannot queue a snapshot: %v", err)
+	}
 	if runtime.eventQueue.PendingCount() != 1 {
 		t.Fatalf("pending = %d, want the duplicate snapshot to be skipped", runtime.eventQueue.PendingCount())
 	}
 }
 
-func TestEnqueueContainerDeltaSkipsUnchangedState(t *testing.T) {
+func TestContainerDeltaSkipsUnchangedState(t *testing.T) {
 	runtime := newTestRuntime(t)
+	conn, frames := newRecordingSocket(t)
 	container := protocol.HandshakeContainer{ID: "c1", Name: "web", Image: "nginx", Ports: "80", Status: "running"}
 
-	runtime.enqueueContainerDelta(container)
-	if runtime.eventQueue.PendingCount() != 1 {
-		t.Fatalf("pending = %d, want 1", runtime.eventQueue.PendingCount())
+	runtime.publishContainerDelta(conn, container)
+	first := waitForEnvelope(t, frames)
+	if !first.IsSignal() {
+		t.Fatalf("class = %q, want a signal so it never enters the queue", first.Class)
+	}
+	if first.Seq != 0 {
+		t.Fatalf("seq = %d, want a signal to carry none", first.Seq)
+	}
+	if runtime.eventQueue.PendingCount() != 0 {
+		t.Fatalf("pending = %d, want a delta to stay out of the durable queue", runtime.eventQueue.PendingCount())
 	}
 
-	runtime.enqueueContainerDelta(container)
-	if runtime.eventQueue.PendingCount() != 1 {
-		t.Fatalf("pending = %d, want the unchanged container to be skipped", runtime.eventQueue.PendingCount())
-	}
-
-	// A status change is coalesced onto the pending delta for the same id.
+	runtime.publishContainerDelta(conn, container)
 	container.Status = "stopped"
-	runtime.enqueueContainerDelta(container)
-	if runtime.eventQueue.PendingCount() != 1 {
-		t.Fatalf("pending = %d, want the delta to be coalesced", runtime.eventQueue.PendingCount())
-	}
-	due := runtime.eventQueue.DueItems(10)
-	if len(due) != 1 {
-		t.Fatalf("expected one due item, got %d", len(due))
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(due[0].Envelope.Payload, &payload); err != nil {
+	runtime.publishContainerDelta(conn, container)
+
+	// The unchanged repeat is dropped, so the next frame is the status change.
+	second := waitForEnvelope(t, frames)
+	var delta protocol.ContainerDelta
+	if err := json.Unmarshal(second.Payload, &delta); err != nil {
 		t.Fatalf("cannot decode the delta payload: %v", err)
 	}
-	if payload["status"] != "stopped" {
-		t.Fatalf("payload status = %v, want the latest state", payload["status"])
-	}
-	if due[0].Envelope.Class != protocol.ClassSignal {
-		t.Fatalf("class = %q, want %q so recovery may drop it", due[0].Envelope.Class, protocol.ClassSignal)
+	if delta.Status != "stopped" {
+		t.Fatalf("status = %q, want the changed state and no repeat in between", delta.Status)
 	}
 }
 
-func TestEnqueueContainerDeltaIgnoresBlankID(t *testing.T) {
+func TestContainerDeltaIgnoresBlankID(t *testing.T) {
 	runtime := newTestRuntime(t)
-	runtime.enqueueContainerDelta(protocol.HandshakeContainer{ID: "  ", Name: "web"})
+	conn, frames := newRecordingSocket(t)
 
-	if runtime.eventQueue.PendingCount() != 0 {
-		t.Fatal("a container without an id must not be enqueued")
+	runtime.publishContainerDelta(conn, protocol.HandshakeContainer{ID: "  ", Name: "web"})
+
+	select {
+	case envelope := <-frames:
+		t.Fatalf("a container without an id must not be reported, got %+v", envelope)
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 
@@ -131,7 +131,7 @@ func TestAckProgressStalled(t *testing.T) {
 	}
 
 	for index := 0; index < queueResetMinPending; index++ {
-		if _, err := runtime.eventQueue.Enqueue(protocol.NewEnvelope()); err != nil {
+		if _, err := runtime.eventQueue.Enqueue(protocol.NewEnvelope(protocol.EntityRuntime, protocol.ActionSnapshot)); err != nil {
 			t.Fatalf("enqueue failed: %v", err)
 		}
 	}

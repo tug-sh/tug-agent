@@ -5,9 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
-	"tug.sh/services/agent/internal/protocol"
+	"tug.sh/pkg/protocol"
 )
 
 const (
@@ -99,8 +98,7 @@ func (runtime *Runtime) handleCheckHostPath(request commandRequest) ([]string, e
 func (runtime *Runtime) handleCronSchedulesApply(request commandRequest) ([]string, error) {
 	normalized := make([]protocol.CronSchedule, 0, len(request.command.Schedules))
 	for _, schedule := range request.command.Schedules {
-		schedule.WorkspaceID = strings.TrimSpace(request.command.WorkspaceID)
-		schedule.ServerID = strings.TrimSpace(request.command.ServerID)
+		schedule.ServerID = runtime.config.ServerID
 		schedule.Source = "dashboard"
 		normalized = append(normalized, schedule)
 	}
@@ -119,23 +117,9 @@ func (runtime *Runtime) handleCronSchedulesPull(request commandRequest) ([]strin
 	if raw, readErr := runtime.fileManager.Read(schedulesStoragePath); readErr == nil {
 		_ = json.Unmarshal(raw, &schedules)
 	}
-	snapshot := protocol.CronSchedulesSnapshot{
-		Type:      "cron_schedules_snapshot_v1",
-		Workspace: firstNonEmpty(request.command.WorkspaceID, runtime.config.WorkspaceID),
-		ServerID:  firstNonEmpty(request.command.ServerID, runtime.config.ServerID),
-		Schedules: schedules,
-	}
-	if err := runtime.writeJSON(request.conn, snapshot); err != nil {
+	snapshot := protocol.CronSnapshot{Schedules: schedules}
+	if err := runtime.emitFact(protocol.EntityCron, protocol.ActionSnapshot, "", snapshot); err != nil {
 		return nil, err
 	}
 	return []string{fmt.Sprintf("Pulled %d schedule(s).", len(schedules))}, nil
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
 }

@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"tug.sh/pkg/protocol"
 	"tug.sh/services/agent/internal/docker"
 	"tug.sh/services/agent/internal/logging"
-	"tug.sh/services/agent/internal/protocol"
 	"tug.sh/services/agent/internal/sandbox"
 	"tug.sh/services/agent/internal/shell"
 )

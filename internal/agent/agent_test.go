@@ -11,8 +11,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"tug.sh/pkg/protocol"
 	"tug.sh/services/agent/internal/config"
-	"tug.sh/services/agent/internal/protocol"
 )
 
 var upgrader = websocket.Upgrader{
@@ -21,90 +21,76 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-func TestAgentHandshake(t *testing.T) {
-	// 1. Create a dummy websocket server
-	handshakeReceived := make(chan protocol.Handshake, 1)
+// TestAgentSendsSnapshotOnConnect checks the shape of the first thing an agent
+// says: a runtime snapshot envelope, at the current protocol version, with the
+// machine's own facts in the payload.
+func TestAgentSendsSnapshotOnConnect(t *testing.T) {
+	received := make(chan protocol.Envelope, 1)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
-		if token == "" {
-			token = r.URL.Query().Get("token")
-		}
-		serverID := r.URL.Query().Get("server_id")
-
-		if token != "test-token" || serverID != "test-server-id" {
+		if token != "test-token" || r.URL.Query().Get("server_id") != "test-server-id" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
 
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			t.Fatalf("Failed to upgrade websocket: %v", err)
+			return
 		}
 		defer conn.Close()
 
-		// Read the first message (should be handshake)
-		_, message, err := conn.ReadMessage()
-		if err != nil {
-			t.Fatalf("Failed to read message: %v", err)
+		for {
+			_, message, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var envelope protocol.Envelope
+			if err := json.Unmarshal(message, &envelope); err != nil {
+				continue
+			}
+			if envelope.Entity == protocol.EntityRuntime && envelope.Action == protocol.ActionSnapshot {
+				received <- envelope
+				return
+			}
 		}
-
-		var hs protocol.Handshake
-		if err := json.Unmarshal(message, &hs); err != nil {
-			t.Fatalf("Failed to unmarshal handshake: %v", err)
-		}
-
-		handshakeReceived <- hs
 	}))
 	defer server.Close()
 
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-
-	// 2. Initialize the agent runtime
-	cfg := config.Config{
+	runtime, err := NewRuntime(config.Config{
 		ServerID:        "test-server-id",
 		AgentToken:      "test-token",
-		APIWebSocketURL: wsURL,
-		WorkspaceID:     "test-workspace-id",
-		Verbose:         true,
-	}
-
-	runtime, err := NewRuntime(cfg)
+		APIWebSocketURL: "ws" + strings.TrimPrefix(server.URL, "http"),
+		OutboxPath:      t.TempDir() + "/queue.json",
+		Verbose:         false,
+	})
 	if err != nil {
-		t.Fatalf("Failed to create runtime: %v", err)
+		t.Fatalf("cannot create the runtime: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	go func() { _ = runtime.Run(ctx) }()
 
-	// Run agent in a goroutine
-	go func() {
-		_ = runtime.Run(ctx)
-	}()
-
-	// 3. Wait for the handshake payload
 	select {
-	case hs := <-handshakeReceived:
-		if hs.Type != "handshake" {
-			t.Errorf("Expected handshake type, got: %s", hs.Type)
+	case envelope := <-received:
+		if !envelope.VersionMatches() {
+			t.Fatalf("the snapshot claims protocol version %q", envelope.ProtocolVersion)
 		}
-		if hs.ServerID != "test-server-id" {
-			t.Errorf("Expected ServerID 'test-server-id', got: %s", hs.ServerID)
+		if envelope.ServerID != "test-server-id" {
+			t.Fatalf("the snapshot names server %q", envelope.ServerID)
 		}
-		if hs.WorkspaceID != "test-workspace-id" {
-			t.Errorf("Expected WorkspaceID 'test-workspace-id', got: %s", hs.WorkspaceID)
+		if envelope.Seq == 0 {
+			t.Fatal("a snapshot is a fact and must carry a sequence number")
 		}
-		hasInboxCap := false
-		for _, capName := range hs.ProtocolCaps {
-			if capName == "command_inbox" {
-				hasInboxCap = true
-			}
+		var snapshot protocol.Handshake
+		if err := json.Unmarshal(envelope.Payload, &snapshot); err != nil {
+			t.Fatalf("cannot read the snapshot payload: %v", err)
 		}
-		if !hasInboxCap {
-			t.Errorf("expected command_inbox protocol cap, got %v", hs.ProtocolCaps)
+		if snapshot.HostName == "" {
+			t.Fatal("the snapshot carries no hostname")
 		}
-		t.Logf("Successfully received handshake: %+v", hs)
 	case <-ctx.Done():
-		t.Fatal("Timeout waiting for handshake from agent")
+		t.Fatal("no snapshot arrived before the deadline")
 	}
 }

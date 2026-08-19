@@ -1,9 +1,10 @@
-package protocol
+package outbox
 
 import (
 	"encoding/json"
 	"path/filepath"
 	"testing"
+	"tug.sh/pkg/protocol"
 )
 
 func TestQueueEnqueueAckAndReload(t *testing.T) {
@@ -11,11 +12,11 @@ func TestQueueEnqueueAckAndReload(t *testing.T) {
 	queue := NewQueue(queuePath)
 
 	firstPayload, _ := json.Marshal(map[string]string{"id": "c1", "status": "running"})
-	env := NewEnvelope()
+	env := protocol.NewEnvelope("", "")
 	env.MessageID = "m1"
 	env.ServerID = "srv-1"
-	env.Entity = EntityContainer
-	env.Action = ActionStatusChanged
+	env.Entity = protocol.EntityContainer
+	env.Action = protocol.ActionStatusChanged
 	env.Payload = firstPayload
 
 	item, err := queue.Enqueue(env)
@@ -52,9 +53,9 @@ func TestQueueReloadKeepsUnacknowledgedItems(t *testing.T) {
 	queue := NewQueue(queuePath)
 
 	for index := 0; index < 3; index++ {
-		envelope := NewEnvelope()
-		envelope.Entity = EntityContainer
-		envelope.Action = ActionStatusChanged
+		envelope := protocol.NewEnvelope("", "")
+		envelope.Entity = protocol.EntityContainer
+		envelope.Action = protocol.ActionStatusChanged
 		if _, err := queue.Enqueue(envelope); err != nil {
 			t.Fatalf("enqueue failed: %v", err)
 		}
@@ -78,7 +79,7 @@ func TestQueueReloadKeepsUnacknowledgedItems(t *testing.T) {
 		t.Fatalf("expected seq 2 and 3 to be due, got %+v", due)
 	}
 	// A restarted agent must not reuse sequence numbers.
-	next, err := reloaded.Enqueue(NewEnvelope())
+	next, err := reloaded.Enqueue(protocol.NewEnvelope("", ""))
 	if err != nil {
 		t.Fatalf("enqueue after reload failed: %v", err)
 	}
@@ -90,18 +91,18 @@ func TestQueueReloadKeepsUnacknowledgedItems(t *testing.T) {
 func TestQueueCoalesceUnsent(t *testing.T) {
 	queuePath := filepath.Join(t.TempDir(), "queue.json")
 	queue := NewQueue(queuePath)
-	first := NewEnvelope()
+	first := protocol.NewEnvelope("", "")
 	first.MessageID = "m1"
-	first.Entity = EntityContainer
-	first.Action = ActionStatusChanged
+	first.Entity = protocol.EntityContainer
+	first.Action = protocol.ActionStatusChanged
 	first.Payload = []byte(`{"id":"c1","status":"running"}`)
 	if _, err := queue.EnqueueCoalesced(first, "container:c1"); err != nil {
 		t.Fatalf("enqueue failed: %v", err)
 	}
-	second := NewEnvelope()
+	second := protocol.NewEnvelope("", "")
 	second.MessageID = "m2"
-	second.Entity = EntityContainer
-	second.Action = ActionStatusChanged
+	second.Entity = protocol.EntityContainer
+	second.Action = protocol.ActionStatusChanged
 	second.Payload = []byte(`{"id":"c1","status":"stopped"}`)
 	item, err := queue.EnqueueCoalesced(second, "container:c1")
 	if err != nil {
@@ -118,11 +119,11 @@ func TestQueueCoalesceUnsent(t *testing.T) {
 func TestQueueRetryScheduling(t *testing.T) {
 	queuePath := filepath.Join(t.TempDir(), "queue.json")
 	queue := NewQueue(queuePath)
-	env := NewEnvelope()
+	env := protocol.NewEnvelope("", "")
 	env.MessageID = "m-retry"
 	env.ServerID = "srv-1"
-	env.Entity = EntityRuntime
-	env.Action = ActionSnapshot
+	env.Entity = protocol.EntityRuntime
+	env.Action = protocol.ActionSnapshot
 	if _, err := queue.Enqueue(env); err != nil {
 		t.Fatalf("enqueue failed: %v", err)
 	}
@@ -144,19 +145,19 @@ func TestQueueResetDropsSignalsOnly(t *testing.T) {
 	queuePath := filepath.Join(t.TempDir(), "queue.json")
 	queue := NewQueue(queuePath)
 
-	snapshot := NewEnvelope()
+	snapshot := protocol.NewEnvelope("", "")
 	snapshot.MessageID = "snap"
-	snapshot.Entity = EntityRuntime
-	snapshot.Action = ActionSnapshot
+	snapshot.Entity = protocol.EntityRuntime
+	snapshot.Action = protocol.ActionSnapshot
 	if _, err := queue.Enqueue(snapshot); err != nil {
 		t.Fatalf("enqueue snapshot failed: %v", err)
 	}
 
-	delta := NewEnvelope()
+	delta := protocol.NewEnvelope("", "")
 	delta.MessageID = "delta"
-	delta.Entity = EntityContainer
-	delta.Action = ActionStatusChanged
-	delta.Class = ClassSignal
+	delta.Entity = protocol.EntityContainer
+	delta.Action = protocol.ActionStatusChanged
+	delta.Class = protocol.ClassSignal
 	if _, err := queue.Enqueue(delta); err != nil {
 		t.Fatalf("enqueue signal failed: %v", err)
 	}

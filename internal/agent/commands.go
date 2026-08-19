@@ -9,7 +9,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"tug.sh/services/agent/internal/protocol"
+	"tug.sh/pkg/protocol"
 )
 
 // commandRequest carries a decoded command together with the transport handles
@@ -73,43 +73,46 @@ func (request commandRequest) requireDomain() (string, error) {
 
 type commandHandler func(runtime *Runtime, request commandRequest) ([]string, error)
 
-// commandHandlers maps every command type dispatched by the API to its handler.
-// Unknown types resolve to no handler and are silently ignored, which keeps an
-// older agent compatible with a newer API.
+// commandHandlers maps every command type the API can dispatch to its handler.
+//
+// The keys are the shared constants rather than string literals. They used to
+// be literals, and two of them ("prune", "run_docker_prune") answered a command
+// the API never sent while the one it did send, docker_prune, fell through to
+// "unknown type" and was silently ignored. A test asserts this map covers
+// protocol.AllCommands, so the next such divergence fails the build.
 var commandHandlers = map[string]commandHandler{
-	"get_docker_disk_usage":      (*Runtime).handleDockerDiskUsage,
-	"prune":                      (*Runtime).handleDockerPrune,
-	"run_docker_prune":           (*Runtime).handleDockerPrune,
-	"terminal_start":             (*Runtime).handleTerminal,
-	"terminal_input":             (*Runtime).handleTerminal,
-	"terminal_resize":            (*Runtime).handleTerminal,
-	"terminal_stop":              (*Runtime).handleTerminal,
-	"run_cron_task":              (*Runtime).handleExecCommand,
-	"exec_command":               (*Runtime).handleExecCommand,
-	"git_deploy":                 (*Runtime).handleGitDeployCommand,
-	"fs_list":                    (*Runtime).handleFileList,
-	"fs_read":                    (*Runtime).handleFileRead,
-	"fs_write":                   (*Runtime).handleFileWrite,
-	"fs_delete":                  (*Runtime).handleFileDelete,
-	"self_update":                (*Runtime).handleSelfUpdate,
-	"disconnect":                 (*Runtime).handleDisconnect,
-	"container_action":           (*Runtime).handleContainerAction,
-	"server_action":              (*Runtime).handleServerAction,
-	"network_create":             (*Runtime).handleNetworkCreate,
-	"network_delete":             (*Runtime).handleNetworkDelete,
-	"save_compose":               (*Runtime).handleSaveCompose,
-	"cron_schedules_apply":       (*Runtime).handleCronSchedulesApply,
-	"cron_schedules_pull":        (*Runtime).handleCronSchedulesPull,
-	"container_logs_tail":        (*Runtime).handleContainerLogsTail,
-	"containers_snapshot_pull":   (*Runtime).handleContainersSnapshotPull,
-	"deploy":                     (*Runtime).handleDeploy,
-	"install_tug_router":         (*Runtime).handleInstallTugRouter,
-	"configure_tug_router_route": (*Runtime).handleConfigureTugRouterRoute,
-	"list_tug_router_routes":     (*Runtime).handleListTugRouterRoutes,
-	"remove_tug_router_route":    (*Runtime).handleRemoveTugRouterRoute,
-	"check_host_path":            (*Runtime).handleCheckHostPath,
-	"get_container_mounts":       (*Runtime).handleContainerMounts,
-	"container_inspect":          (*Runtime).handleContainerInspect,
+	protocol.CmdDockerDiskUsage:      (*Runtime).handleDockerDiskUsage,
+	protocol.CmdDockerPrune:          (*Runtime).handleDockerPrune,
+	protocol.CmdTerminalStart:        (*Runtime).handleTerminal,
+	protocol.CmdTerminalInput:        (*Runtime).handleTerminal,
+	protocol.CmdTerminalResize:       (*Runtime).handleTerminal,
+	protocol.CmdTerminalStop:         (*Runtime).handleTerminal,
+	protocol.CmdRunCronTask:          (*Runtime).handleExecCommand,
+	protocol.CmdExecCommand:          (*Runtime).handleExecCommand,
+	protocol.CmdGitDeploy:            (*Runtime).handleGitDeployCommand,
+	protocol.CmdFileList:             (*Runtime).handleFileList,
+	protocol.CmdFileRead:             (*Runtime).handleFileRead,
+	protocol.CmdFileWrite:            (*Runtime).handleFileWrite,
+	protocol.CmdFileDelete:           (*Runtime).handleFileDelete,
+	protocol.CmdSelfUpdate:           (*Runtime).handleSelfUpdate,
+	protocol.CmdDisconnect:           (*Runtime).handleDisconnect,
+	protocol.CmdContainerAction:      (*Runtime).handleContainerAction,
+	protocol.CmdServerAction:         (*Runtime).handleServerAction,
+	protocol.CmdNetworkCreate:        (*Runtime).handleNetworkCreate,
+	protocol.CmdNetworkDelete:        (*Runtime).handleNetworkDelete,
+	protocol.CmdSaveCompose:          (*Runtime).handleSaveCompose,
+	protocol.CmdCronSchedulesApply:   (*Runtime).handleCronSchedulesApply,
+	protocol.CmdCronSchedulesPull:    (*Runtime).handleCronSchedulesPull,
+	protocol.CmdContainerLogsTail:    (*Runtime).handleContainerLogsTail,
+	protocol.CmdContainersSnapshot:   (*Runtime).handleContainersSnapshotPull,
+	protocol.CmdDeploy:               (*Runtime).handleDeploy,
+	protocol.CmdRouterInstall:        (*Runtime).handleInstallTugRouter,
+	protocol.CmdRouterRouteConfigure: (*Runtime).handleConfigureTugRouterRoute,
+	protocol.CmdRouterRouteList:      (*Runtime).handleListTugRouterRoutes,
+	protocol.CmdRouterRouteRemove:    (*Runtime).handleRemoveTugRouterRoute,
+	protocol.CmdCheckHostPath:        (*Runtime).handleCheckHostPath,
+	protocol.CmdContainerMounts:      (*Runtime).handleContainerMounts,
+	protocol.CmdContainerInspect:     (*Runtime).handleContainerInspect,
 }
 
 func (runtime *Runtime) executeCommand(

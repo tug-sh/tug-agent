@@ -11,7 +11,7 @@ import (
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
 
-	"tug.sh/services/agent/internal/protocol"
+	"tug.sh/pkg/protocol"
 )
 
 type TerminalSession struct {
@@ -86,21 +86,26 @@ func (runtime *Runtime) handleTerminalCommand(ctx context.Context, conn *websock
 			for {
 				n, err := ptmx.Read(buf)
 				if err != nil {
-					// PTY closed or command exited
+					// The PTY closed or the shell exited. Say so, otherwise the
+					// browser keeps a dead session open.
+					_ = runtime.emitSignal(conn, protocol.EntityTerminal, protocol.ActionOutput, protocol.TerminalOutput{
+						TerminalID: cmd.TerminalID,
+						Closed:     true,
+					})
 					return
 				}
-				if n > 0 {
-					payloadBase64 := base64.StdEncoding.EncodeToString(buf[:n])
-					outbound := protocol.CommandResult{
-						Type:      "terminal_output",
-						CommandID: cmd.TerminalID, // use CommandID field to route back to specific terminal
-						Success:   true,
-						Logs:      []string{payloadBase64}, // Send as base64 array element to reuse protocol.CommandResult struct
-					}
-					// Fire and forget
-					if writeErr := runtime.writeJSON(conn, outbound); writeErr != nil {
-						runtime.log.Error("failed to send terminal output: %v", writeErr)
-					}
+				if n == 0 {
+					continue
+				}
+				// Terminal bytes have their own message type now. They used to
+				// travel as a command result with the terminal id in the
+				// command field, which meant every reader had to know the trick.
+				output := protocol.TerminalOutput{
+					TerminalID: cmd.TerminalID,
+					Data:       base64.StdEncoding.EncodeToString(buf[:n]),
+				}
+				if writeErr := runtime.emitSignal(conn, protocol.EntityTerminal, protocol.ActionOutput, output); writeErr != nil {
+					runtime.log.Error("failed to send terminal output: %v", writeErr)
 				}
 			}
 		}()

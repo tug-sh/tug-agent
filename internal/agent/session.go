@@ -11,7 +11,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"tug.sh/services/agent/internal/protocol"
+	"tug.sh/pkg/protocol"
 )
 
 const (
@@ -45,7 +45,7 @@ func (runtime *Runtime) connectAndServe(ctx context.Context) (bool, error) {
 		return nil
 	})
 
-	if handshakeErr := runtime.sendHandshake(conn, true); handshakeErr != nil {
+	if handshakeErr := runtime.sendSnapshot(); handshakeErr != nil {
 		return runtime.wasSessionStable(sessionStartedAt), handshakeErr
 	}
 	runtime.log.Debug("initial handshake sent")
@@ -121,11 +121,8 @@ func (runtime *Runtime) startSessionWorkers(sessionCtx context.Context, conn *we
 		conn,
 		positiveOrDefault(runtime.config.SelfHealInterval, defaultSelfHealPeriod),
 	)
-	go runtime.periodicContainerStatusRefresh(sessionCtx)
+	go runtime.periodicContainerStatusRefresh(sessionCtx, conn)
 
-	if !runtime.config.ProtocolV2Enabled {
-		return
-	}
 	runtime.ackStateMu.Lock()
 	runtime.lastAckSeq = runtime.eventQueue.AckUptoSeq()
 	runtime.lastAckProgressAt = time.Now()
@@ -154,6 +151,10 @@ func (runtime *Runtime) readServerFrames(ctx context.Context, conn *websocket.Co
 			runtime.log.Warn("invalid command payload: %v", unmarshalErr)
 			continue
 		}
+		if command.Type == "" {
+			runtime.log.Debug("ignoring a frame that is neither an ack nor a command")
+			continue
+		}
 		runtime.log.Debug("received command: type=%s command_id=%s", command.Type, command.CommandID)
 		go runtime.runCommand(ctx, conn, command)
 	}
@@ -162,12 +163,12 @@ func (runtime *Runtime) readServerFrames(ctx context.Context, conn *websocket.Co
 // handleControlFrame processes transport level frames. It reports whether the
 // frame was consumed, and returns an error only when the session must end.
 func (runtime *Runtime) handleControlFrame(message []byte) (bool, error) {
-	var frame protocol.ServerFrame
+	var frame protocol.ControlFrame
 	if err := json.Unmarshal(message, &frame); err != nil {
 		return false, nil
 	}
 	switch strings.ToLower(strings.TrimSpace(frame.Type)) {
-	case "auth_error":
+	case protocol.TypeAuthError:
 		details := strings.TrimSpace(frame.Error)
 		if details == "" {
 			details = "unauthorized agent connection"
@@ -176,7 +177,7 @@ func (runtime *Runtime) handleControlFrame(message []byte) (bool, error) {
 			"websocket authorization rejected: %s; token may be pending pairing in dashboard",
 			details,
 		))
-	case "keepalive", "ping":
+	case protocol.TypeKeepalive:
 		return true, nil
 	default:
 		return false, nil
@@ -220,7 +221,7 @@ func (runtime *Runtime) periodicHeartbeat(ctx context.Context, conn *websocket.C
 
 func (runtime *Runtime) periodicSelfHealSnapshot(ctx context.Context, conn *websocket.Conn, interval time.Duration) {
 	runEvery(ctx, interval, func() bool {
-		if err := runtime.sendHandshake(conn, true); err != nil {
+		if err := runtime.sendSnapshot(); err != nil {
 			return runtime.endSession(conn, "periodic self-heal snapshot failed", err)
 		}
 		runtime.log.Debug("periodic self-heal snapshot sent")
@@ -228,13 +229,13 @@ func (runtime *Runtime) periodicSelfHealSnapshot(ctx context.Context, conn *webs
 	})
 }
 
-func (runtime *Runtime) periodicContainerStatusRefresh(ctx context.Context) {
+func (runtime *Runtime) periodicContainerStatusRefresh(ctx context.Context, conn *websocket.Conn) {
 	interval := containerRefreshPeriod
 	if runtime.config.HeartbeatInterval > 0 && runtime.config.HeartbeatInterval < interval {
 		interval = runtime.config.HeartbeatInterval
 	}
 	runEvery(ctx, interval, func() bool {
-		runtime.enqueueAllRunningContainerDeltas(ctx)
+		runtime.publishAllContainerStatuses(ctx, conn)
 		return true
 	})
 }
@@ -251,19 +252,4 @@ func (runtime *Runtime) periodicWSPing(ctx context.Context, conn *websocket.Conn
 		}
 		return true
 	})
-}
-
-// writeJSON serializes and sends a frame. All writers share one mutex because
-// gorilla websocket allows a single concurrent writer per connection.
-func (runtime *Runtime) writeJSON(conn *websocket.Conn, payload any) error {
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	runtime.writeMu.Lock()
-	defer runtime.writeMu.Unlock()
-	conn.SetWriteDeadline(time.Now().Add(writeTimeout))
-	err = conn.WriteMessage(websocket.TextMessage, raw)
-	conn.SetWriteDeadline(time.Time{})
-	return err
 }

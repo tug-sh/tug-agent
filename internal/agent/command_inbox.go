@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"tug.sh/services/agent/internal/protocol"
+	"tug.sh/pkg/protocol"
 	"tug.sh/services/agent/internal/sandbox"
 )
 

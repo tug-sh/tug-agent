@@ -2,7 +2,6 @@ package config
 
 import (
 	_ "embed"
-	"encoding/base64"
 	"os"
 	"strconv"
 	"strings"
@@ -15,28 +14,31 @@ var embeddedVersion string
 var defaultAgentVersion = strings.TrimSpace(embeddedVersion)
 
 type Config struct {
-	AgentVersion        string
-	ServerID            string
-	WorkspaceID         string
-	AgentToken          string
-	APIWebSocketURL     string
-	DashboardURL        string
-	AgentEnvPath        string
-	Verbose             bool
-	LogLevel            string
-	TrafficProfile      string
-	HeartbeatInterval   time.Duration
-	SelfHealInterval    time.Duration
-	ReconnectBaseDelay  time.Duration
-	ReconnectMaxDelay   time.Duration
-	ReconnectJitterPct  int
-	ProtocolV2Enabled   bool
-	ProtocolV2QueuePath string
-	RouterImage         string
-	RouterNetwork       string
-	RouterHTTPPort      int
-	RouterHTTPSPort     int
-	RouterConfigPath    string
+	AgentVersion       string
+	ServerID           string
+	AgentToken         string
+	APIWebSocketURL    string
+	DashboardURL       string
+	AgentEnvPath       string
+	Verbose            bool
+	LogLevel           string
+	TrafficProfile     string
+	HeartbeatInterval  time.Duration
+	SelfHealInterval   time.Duration
+	ReconnectBaseDelay time.Duration
+	ReconnectMaxDelay  time.Duration
+	ReconnectJitterPct int
+	// OutboxPath is where undelivered messages wait, and CommandInboxPath is
+	// where commands already handled are remembered so a replay after a
+	// reconnect is not executed twice. An empty value means the default
+	// location under the agent's data directory.
+	OutboxPath       string
+	CommandInboxPath string
+	RouterImage      string
+	RouterNetwork    string
+	RouterHTTPPort   int
+	RouterHTTPSPort  int
+	RouterConfigPath string
 }
 
 // Edge router defaults. They describe the reference tug-router installation and
@@ -64,12 +66,11 @@ const (
 )
 
 func Load() Config {
+	// The token is opaque. It used to carry the server id base64 encoded in the
+	// middle, which meant rotating a token could change which machine the agent
+	// claimed to be. Both values are now written separately by `tug init`.
 	agentToken := envOrDefault("TUG_AGENT_TOKEN", "")
-	serverID := parseServerIDFromToken(agentToken)
-	if serverID == "" {
-		// Compatibility fallback for legacy token format.
-		serverID = envOrDefault("TUG_SERVER_ID", "")
-	}
+	serverID := strings.TrimSpace(envOrDefault("TUG_SERVER_ID", ""))
 	debugProfileEnabled := envBoolOrDefault("TUG_AGENT_DEBUG_PROFILE", false)
 	trafficProfile := normalizeTrafficProfile(envOrDefault("TUG_AGENT_TRAFFIC_PROFILE", defaultTrafficProfile))
 	if debugProfileEnabled {
@@ -85,28 +86,27 @@ func Load() Config {
 	reconnectMaxDefault := 30 * time.Second
 	reconnectJitterDefault := 20
 	cfg := Config{
-		AgentVersion:        envOrDefault("TUG_AGENT_VERSION", defaultAgentVersion),
-		ServerID:            serverID,
-		WorkspaceID:         "",
-		AgentToken:          agentToken,
-		APIWebSocketURL:     envOrDefault("TUG_API_WS_URL", "wss://api.tug.sh/ws/agents"),
-		DashboardURL:        envOrDefault("TUG_DASHBOARD_URL", "https://app.tug.sh"),
-		AgentEnvPath:        envOrDefault("TUG_AGENT_ENV_PATH", "/etc/tug/agent.env"),
-		Verbose:             envBoolOrDefault("TUG_VERBOSE", true),
-		LogLevel:            envOrDefault("TUG_LOG_LEVEL", ""),
-		TrafficProfile:      trafficProfile,
-		HeartbeatInterval:   envDurationAtLeast("TUG_AGENT_HEARTBEAT_INTERVAL", heartbeatDefault, minHeartbeatInterval),
-		SelfHealInterval:    envDurationAtLeast("TUG_AGENT_SELF_HEAL_INTERVAL", selfHealDefault, minHeartbeatInterval),
-		ReconnectBaseDelay:  envDurationAtLeast("TUG_AGENT_RECONNECT_BASE_DELAY", reconnectBaseDefault, minReconnectBaseDelay),
-		ReconnectMaxDelay:   envDurationAtLeast("TUG_AGENT_RECONNECT_MAX_DELAY", reconnectMaxDefault, minReconnectBaseDelay),
-		ReconnectJitterPct:  envIntClamped("TUG_AGENT_RECONNECT_JITTER_PCT", reconnectJitterDefault, 0, maxReconnectJitterPct),
-		ProtocolV2Enabled:   envBoolOrDefault("TUG_PROTOCOL_V2_ENABLED", false),
-		ProtocolV2QueuePath: envOrDefault("TUG_PROTOCOL_V2_QUEUE_PATH", ""),
-		RouterImage:         envOrDefault("TUG_ROUTER_IMAGE", defaultRouterImage),
-		RouterNetwork:       envOrDefault("TUG_ROUTER_NETWORK", ""),
-		RouterHTTPPort:      envPortOrDefault("TUG_ROUTER_HTTP_PORT", defaultRouterHTTPPort),
-		RouterHTTPSPort:     envPortOrDefault("TUG_ROUTER_HTTPS_PORT", defaultRouterHTTPSPort),
-		RouterConfigPath:    envOrDefault("TUG_ROUTER_CONFIG_PATH", defaultRouterConfigPath),
+		AgentVersion:       envOrDefault("TUG_AGENT_VERSION", defaultAgentVersion),
+		ServerID:           serverID,
+		AgentToken:         agentToken,
+		APIWebSocketURL:    envOrDefault("TUG_API_WS_URL", "wss://api.tug.sh/ws/agents"),
+		DashboardURL:       envOrDefault("TUG_DASHBOARD_URL", "https://app.tug.sh"),
+		AgentEnvPath:       envOrDefault("TUG_AGENT_ENV_PATH", "/etc/tug/agent.env"),
+		Verbose:            envBoolOrDefault("TUG_VERBOSE", true),
+		LogLevel:           envOrDefault("TUG_LOG_LEVEL", ""),
+		TrafficProfile:     trafficProfile,
+		HeartbeatInterval:  envDurationAtLeast("TUG_AGENT_HEARTBEAT_INTERVAL", heartbeatDefault, minHeartbeatInterval),
+		SelfHealInterval:   envDurationAtLeast("TUG_AGENT_SELF_HEAL_INTERVAL", selfHealDefault, minHeartbeatInterval),
+		ReconnectBaseDelay: envDurationAtLeast("TUG_AGENT_RECONNECT_BASE_DELAY", reconnectBaseDefault, minReconnectBaseDelay),
+		ReconnectMaxDelay:  envDurationAtLeast("TUG_AGENT_RECONNECT_MAX_DELAY", reconnectMaxDefault, minReconnectBaseDelay),
+		ReconnectJitterPct: envIntClamped("TUG_AGENT_RECONNECT_JITTER_PCT", reconnectJitterDefault, 0, maxReconnectJitterPct),
+		OutboxPath:         envOrDefault("TUG_AGENT_OUTBOX_PATH", ""),
+		CommandInboxPath:   envOrDefault("TUG_AGENT_COMMAND_INBOX_PATH", ""),
+		RouterImage:        envOrDefault("TUG_ROUTER_IMAGE", defaultRouterImage),
+		RouterNetwork:      envOrDefault("TUG_ROUTER_NETWORK", ""),
+		RouterHTTPPort:     envPortOrDefault("TUG_ROUTER_HTTP_PORT", defaultRouterHTTPPort),
+		RouterHTTPSPort:    envPortOrDefault("TUG_ROUTER_HTTPS_PORT", defaultRouterHTTPSPort),
+		RouterConfigPath:   envOrDefault("TUG_ROUTER_CONFIG_PATH", defaultRouterConfigPath),
 	}
 	return withConsistentIntervals(cfg)
 }
@@ -208,16 +208,4 @@ func normalizeTrafficProfile(value string) string {
 	default:
 		return defaultTrafficProfile
 	}
-}
-
-func parseServerIDFromToken(token string) string {
-	parts := strings.Split(strings.TrimSpace(token), ".")
-	if len(parts) != 3 || parts[0] != "agtv2" {
-		return ""
-	}
-	rawServerID, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(rawServerID))
 }

@@ -45,7 +45,6 @@ func TestHandleControlFrame(t *testing.T) {
 		wantErr     bool
 	}{
 		{"keepalive", `{"type":"keepalive"}`, true, false},
-		{"ping", `{"type":" PING "}`, true, false},
 		{"auth error", `{"type":"auth_error","error":"unknown token"}`, true, true},
 		{"command", `{"type":"exec_command","command_id":"c1"}`, false, false},
 		{"malformed", `not json`, false, false},

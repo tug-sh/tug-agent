@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"tug.sh/services/agent/internal/protocol"
+	"tug.sh/pkg/protocol"
 )
 
 func TestRequire(t *testing.T) {

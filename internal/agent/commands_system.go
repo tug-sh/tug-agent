@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"tug.sh/pkg/protocol"
 	"tug.sh/services/agent/internal/lifecycle"
-	"tug.sh/services/agent/internal/protocol"
 	"tug.sh/services/agent/internal/shell"
 )
 
@@ -52,11 +52,8 @@ func describeCommandOutput(raw string, execErr error) string {
 
 func (runtime *Runtime) handleSelfUpdate(request commandRequest) ([]string, error) {
 	reportProgress := func(downloaded uint64, total uint64, percent int) {
-		_ = runtime.writeJSON(request.conn, protocol.UpdateProgress{
-			Type:            "update_progress",
+		_ = runtime.emitSignal(request.conn, protocol.EntityCommand, protocol.ActionProgress, protocol.UpdateProgress{
 			CommandID:       request.command.CommandID,
-			ServerID:        runtime.config.ServerID,
-			WorkspaceID:     runtime.config.WorkspaceID,
 			DownloadedBytes: downloaded,
 			TotalBytes:      total,
 			Percent:         percent,

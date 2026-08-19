@@ -1,4 +1,9 @@
-package protocol
+// Package outbox is the agent's durable send queue.
+//
+// Facts are written to disk before they go on the wire and stay there until the
+// API acknowledges them, so a dropped connection or a restarted agent does not
+// lose a command result. Signals never reach this package.
+package outbox
 
 import (
 	"crypto/rand"
@@ -11,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"tug.sh/pkg/protocol"
 	"tug.sh/services/agent/internal/sandbox"
 )
 
@@ -22,20 +28,18 @@ var retryDelaySchedule = []time.Duration{
 	30 * time.Second,
 }
 
-const (
-	ClassFact         = "fact"
-	ClassSignal       = "signal"
-	queueCompactEvery = 32
-)
+// The log is rewritten from scratch once this many acknowledgements have
+// landed, which keeps the append-only file from growing without bound.
+const queueCompactEvery = 32
 
 type QueuedEnvelope struct {
-	Envelope    Envelope `json:"envelope"`
-	RetryCount  int      `json:"retry_count"`
-	LastAttempt int64    `json:"last_attempt_unix_ms"`
-	NextAttempt int64    `json:"next_attempt_unix_ms"`
-	CreatedAt   int64    `json:"created_at_unix_ms"`
-	LastError   string   `json:"last_error,omitempty"`
-	CoalesceKey string   `json:"coalesce_key,omitempty"`
+	Envelope    protocol.Envelope `json:"envelope"`
+	RetryCount  int               `json:"retry_count"`
+	LastAttempt int64             `json:"last_attempt_unix_ms"`
+	NextAttempt int64             `json:"next_attempt_unix_ms"`
+	CreatedAt   int64             `json:"created_at_unix_ms"`
+	LastError   string            `json:"last_error,omitempty"`
+	CoalesceKey string            `json:"coalesce_key,omitempty"`
 }
 
 type Queue struct {
@@ -235,16 +239,16 @@ func (queue *Queue) compactLocked() error {
 	return queue.persistMetaLocked()
 }
 
-func (queue *Queue) Enqueue(env Envelope) (QueuedEnvelope, error) {
+func (queue *Queue) Enqueue(env protocol.Envelope) (QueuedEnvelope, error) {
 	return queue.EnqueueCoalesced(env, "")
 }
 
-func (queue *Queue) EnqueueCoalesced(env Envelope, coalesceKey string) (QueuedEnvelope, error) {
+func (queue *Queue) EnqueueCoalesced(env protocol.Envelope, coalesceKey string) (QueuedEnvelope, error) {
 	queue.mu.Lock()
 	defer queue.mu.Unlock()
 	queue.ensurePath()
 	if strings.TrimSpace(env.Class) == "" {
-		env.Class = ClassFact
+		env.Class = protocol.ClassFact
 	}
 	coalesceKey = strings.TrimSpace(coalesceKey)
 	if coalesceKey != "" {
@@ -356,7 +360,7 @@ func (queue *Queue) HasPendingSnapshot() bool {
 		if item == nil {
 			continue
 		}
-		if item.Envelope.Entity == EntityRuntime && item.Envelope.Action == ActionSnapshot {
+		if item.Envelope.Entity == protocol.EntityRuntime && item.Envelope.Action == protocol.ActionSnapshot {
 			return true
 		}
 	}
@@ -374,7 +378,7 @@ func (queue *Queue) ResetPendingForRecovery() (int, error) {
 	defer queue.mu.Unlock()
 	dropped := 0
 	for seq, item := range queue.itemsBySeq {
-		if strings.EqualFold(strings.TrimSpace(item.Envelope.Class), ClassSignal) {
+		if strings.EqualFold(strings.TrimSpace(item.Envelope.Class), protocol.ClassSignal) {
 			delete(queue.itemsBySeq, seq)
 			dropped++
 		}

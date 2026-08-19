@@ -5,18 +5,18 @@ import (
 	"encoding/json"
 	"testing"
 
-	"tug.sh/services/agent/internal/protocol"
+	"tug.sh/pkg/protocol"
 )
 
 func TestIsStreamCommandType(t *testing.T) {
 	streaming := []string{"terminal_start", "terminal_input", "terminal_resize", "terminal_stop", "container_logs_tail"}
 	for _, commandType := range streaming {
-		if !isStreamCommandType(commandType) {
+		if !protocol.IsStreamingCommand(commandType) {
 			t.Errorf("%s should be a streaming command", commandType)
 		}
 	}
 	for _, commandType := range []string{"deploy", "fs_read", ""} {
-		if isStreamCommandType(commandType) {
+		if protocol.IsStreamingCommand(commandType) {
 			t.Errorf("%s should not be a streaming command", commandType)
 		}
 	}
@@ -36,15 +36,33 @@ func TestExecuteCommandIgnoresUnknownType(t *testing.T) {
 	}
 }
 
-func TestEveryHandlerIsRegistered(t *testing.T) {
-	for commandType, handler := range commandHandlers {
+// Every command the API is able to send must have a handler here. This is the
+// check that the two sides of the protocol still agree, and it is worth more
+// than any individual handler test: a command with no handler is accepted,
+// acknowledged and then quietly does nothing.
+func TestEveryProtocolCommandHasAHandler(t *testing.T) {
+	for _, commandType := range protocol.AllCommands {
+		handler, registered := commandHandlers[commandType]
+		if !registered {
+			t.Errorf("the API can send %q and this agent would ignore it", commandType)
+			continue
+		}
 		if handler == nil {
 			t.Errorf("command %q has a nil handler", commandType)
 		}
 	}
-	for _, required := range []string{"deploy", "git_deploy", "container_action", "fs_read", "self_update"} {
-		if _, ok := commandHandlers[required]; !ok {
-			t.Errorf("command %q is not registered", required)
+}
+
+// The converse: a handler for something the API cannot send is dead code, and
+// the sign of a command that was renamed on one side only.
+func TestNoHandlerAnswersACommandNobodySends(t *testing.T) {
+	known := make(map[string]bool, len(protocol.AllCommands))
+	for _, commandType := range protocol.AllCommands {
+		known[commandType] = true
+	}
+	for commandType := range commandHandlers {
+		if !known[commandType] {
+			t.Errorf("nothing sends %q, so its handler is unreachable", commandType)
 		}
 	}
 }
@@ -84,15 +102,6 @@ func TestClampTailLines(t *testing.T) {
 		if got := clampTailLines(requested); got != want {
 			t.Errorf("clampTailLines(%d) = %d, want %d", requested, got, want)
 		}
-	}
-}
-
-func TestFirstNonEmpty(t *testing.T) {
-	if got := firstNonEmpty("", "  ", " value ", "other"); got != "value" {
-		t.Errorf("firstNonEmpty() = %q, want %q", got, "value")
-	}
-	if got := firstNonEmpty("", "   "); got != "" {
-		t.Errorf("firstNonEmpty() = %q, want an empty string", got)
 	}
 }
 

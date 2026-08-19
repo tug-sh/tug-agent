@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"tug.sh/services/agent/internal/protocol"
+	"tug.sh/pkg/protocol"
 	"tug.sh/services/agent/internal/sandbox"
 )
 
@@ -54,10 +54,10 @@ func (runtime *Runtime) handleContainerAction(request commandRequest) ([]string,
 	if err != nil {
 		return nil, err
 	}
-	if handshakeErr := runtime.sendHandshake(request.conn, false); handshakeErr != nil {
+	if handshakeErr := runtime.sendSnapshot(); handshakeErr != nil {
 		return nil, handshakeErr
 	}
-	runtime.enqueueContainerStatusDelta(request.ctx, containerID)
+	runtime.publishContainerStatus(request.ctx, request.conn, containerID)
 	return []string{fmt.Sprintf("Container %s %s succeeded.", containerID, request.command.Action)}, nil
 }
 
@@ -101,7 +101,7 @@ func (runtime *Runtime) changeNetwork(
 	if applyErr != nil {
 		return logs, applyErr
 	}
-	return logs, runtime.sendHandshake(request.conn, false)
+	return logs, runtime.sendSnapshot()
 }
 
 func (runtime *Runtime) handleDeploy(request commandRequest) ([]string, error) {
@@ -126,10 +126,10 @@ func (runtime *Runtime) handleDeploy(request commandRequest) ([]string, error) {
 	if deployErr != nil {
 		return logs, deployErr
 	}
-	if handshakeErr := runtime.sendHandshake(request.conn, false); handshakeErr != nil {
+	if handshakeErr := runtime.sendSnapshot(); handshakeErr != nil {
 		return logs, handshakeErr
 	}
-	runtime.enqueueAllRunningContainerDeltas(request.ctx)
+	runtime.publishAllContainerStatuses(request.ctx, request.conn)
 	return logs, nil
 }
 

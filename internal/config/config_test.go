@@ -1,7 +1,6 @@
 package config
 
 import (
-	"encoding/base64"
 	"testing"
 	"time"
 )
@@ -95,37 +94,14 @@ func TestLoadDebugTrafficProfile(t *testing.T) {
 	}
 }
 
-func TestLoadDerivesServerIDFromToken(t *testing.T) {
-	serverID := "srv_vps_1234"
-	token := "agtv2." + base64.RawURLEncoding.EncodeToString([]byte(serverID)) + ".secret"
-	t.Setenv("TUG_AGENT_TOKEN", token)
-	t.Setenv("TUG_SERVER_ID", "srv_from_env")
+// The server id is read from its own variable. It used to be decoded out of
+// the token, which tied a rotated credential to the machine's identity.
+func TestLoadReadsServerIDFromEnvironment(t *testing.T) {
+	t.Setenv("TUG_AGENT_TOKEN", "tug_abc123")
+	t.Setenv("TUG_SERVER_ID", "  a1B2c3D4e5F6  ")
 
-	if got := Load().ServerID; got != serverID {
-		t.Fatalf("ServerID = %q, want %q", got, serverID)
-	}
-}
-
-func TestLoadFallsBackToLegacyServerID(t *testing.T) {
-	t.Setenv("TUG_AGENT_TOKEN", "legacy-token")
-	t.Setenv("TUG_SERVER_ID", "srv_legacy")
-
-	if got := Load().ServerID; got != "srv_legacy" {
-		t.Fatalf("ServerID = %q, want %q", got, "srv_legacy")
-	}
-}
-
-func TestParseServerIDFromToken(t *testing.T) {
-	valid := "agtv2." + base64.RawURLEncoding.EncodeToString([]byte(" srv_1 ")) + ".secret"
-	if got := parseServerIDFromToken(valid); got != "srv_1" {
-		t.Errorf("parseServerIDFromToken() = %q, want %q", got, "srv_1")
-	}
-
-	invalid := []string{"", "agtv1.abc.def", "agtv2.abc", "agtv2.!!!.def"}
-	for _, token := range invalid {
-		if got := parseServerIDFromToken(token); got != "" {
-			t.Errorf("parseServerIDFromToken(%q) = %q, want an empty string", token, got)
-		}
+	if got := Load().ServerID; got != "a1B2c3D4e5F6" {
+		t.Fatalf("ServerID = %q, want %q", got, "a1B2c3D4e5F6")
 	}
 }
 

@@ -84,9 +84,8 @@ func main() {
 	}
 	defer releaseLock()
 	logging.Debug(
-		"agent startup: server_id=%s workspace_id=%s ws_url=%s env_path=%s profile=%s heartbeat=%s self_heal=%s reconnect_base=%s reconnect_max=%s jitter_pct=%d",
+		"agent startup: server_id=%s ws_url=%s env_path=%s profile=%s heartbeat=%s self_heal=%s reconnect_base=%s reconnect_max=%s jitter_pct=%d",
 		cfg.ServerID,
-		cfg.WorkspaceID,
 		cfg.APIWebSocketURL,
 		cfg.AgentEnvPath,
 		cfg.TrafficProfile,
@@ -133,7 +132,7 @@ func cliCommands() map[string]cliCommand {
 			run:     func(cfg config.Config, _ []string) error { return runUpdate(cfg) },
 			success: "Agent updated successfully and restarted.",
 		},
-		"init":   {run: func(cfg config.Config, _ []string) error { return runInit(cfg) }},
+		"init":   {run: runInit},
 		"start":  {run: func(cfg config.Config, _ []string) error { return runStart(cfg) }},
 		"status": {run: func(config.Config, []string) error { return runStatus() }},
 		"stop": {
@@ -588,7 +587,7 @@ func printHelp(version string) {
 	fmt.Println("  tug <command>")
 	fmt.Println()
 	fmt.Println("\033[1;33mCOMMANDS:\033[0m")
-	fmt.Println("  \033[1;37minit\033[0m        Generate connection pairing key and dashboard link")
+	fmt.Println("  \033[1;37minit\033[0m        Pair this machine (`tug init <server-id> <token>`)")
 	fmt.Println("  \033[1;37mstart\033[0m       Start background agent service (`systemctl start tug-agent`)")
 	fmt.Println("  \033[1;37mstatus\033[0m      Show agent connection status and service health")
 	fmt.Println("  \033[1;37mstop\033[0m        Stop agent background service (`systemctl stop tug-agent`)")

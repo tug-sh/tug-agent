@@ -28,10 +28,10 @@ func (runtime *Runtime) handleInstallTugRouter(request commandRequest) ([]string
 	if installErr != nil {
 		return logs, installErr
 	}
-	if handshakeErr := runtime.sendHandshake(request.conn, false); handshakeErr != nil {
+	if handshakeErr := runtime.sendSnapshot(); handshakeErr != nil {
 		return logs, handshakeErr
 	}
-	runtime.enqueueAllRunningContainerDeltas(request.ctx)
+	runtime.publishAllContainerStatuses(request.ctx, request.conn)
 	return logs, nil
 }
 

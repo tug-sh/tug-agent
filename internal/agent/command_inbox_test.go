@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"tug.sh/services/agent/internal/protocol"
+	"tug.sh/pkg/protocol"
 )
 
 func TestCommandInboxIdempotentReceipt(t *testing.T) {
@@ -15,7 +15,6 @@ func TestCommandInboxIdempotentReceipt(t *testing.T) {
 		t.Fatalf("expected running receipt")
 	}
 	inbox.markResult(protocol.CommandResult{
-		Type:      "command_result",
 		CommandID: "cmd-1",
 		Success:   true,
 		Logs:      []string{"ok"},

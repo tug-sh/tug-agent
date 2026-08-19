@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"tug.sh/services/agent/internal/protocol"
+	"tug.sh/pkg/protocol"
 )
 
 const defaultLogsPreviewLines = 20

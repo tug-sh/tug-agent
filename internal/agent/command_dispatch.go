@@ -6,14 +6,14 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"tug.sh/services/agent/internal/protocol"
+	"tug.sh/pkg/protocol"
 )
 
 const (
-	commandStatusReceived  = "received"
-	commandStatusRunning   = "running"
-	commandStatusSucceeded = "succeeded"
-	commandStatusFailed    = "failed"
+	commandStatusReceived  = protocol.StatusReceived
+	commandStatusRunning   = protocol.StatusRunning
+	commandStatusSucceeded = protocol.StatusSucceeded
+	commandStatusFailed    = protocol.StatusFailed
 )
 
 // runCommand executes one dashboard command and reports its lifecycle back.
@@ -23,7 +23,7 @@ func (runtime *Runtime) runCommand(ctx context.Context, conn *websocket.Conn, co
 	}
 	// Streaming commands (terminal, log tails) report their own lifecycle, so
 	// they are not tracked in the inbox and get no received/running progress.
-	tracked := command.CommandID != "" && !isStreamCommandType(command.Type)
+	tracked := command.CommandID != "" && !protocol.IsStreamingCommand(command.Type)
 	if tracked {
 		runtime.reportCommandProgress(conn, command.CommandID, commandStatusReceived)
 		runtime.commandInbox.markRunning(command.CommandID)
@@ -40,13 +40,11 @@ func (runtime *Runtime) runCommand(ctx context.Context, conn *websocket.Conn, co
 	}
 }
 
-// sendProgress stamps a progress frame with the fields every frame carries and
-// puts it on the wire. Delivery failures are ignored: the authoritative result
-// is replayed from the inbox after a reconnect.
+// sendProgress reports an intermediate state. It is a signal, so a delivery
+// failure is ignored: the result that follows is the authoritative message and
+// it is queued.
 func (runtime *Runtime) sendProgress(conn *websocket.Conn, progress protocol.CommandProgress) {
-	progress.Type = "command_progress"
-	progress.ServerID = runtime.config.ServerID
-	_ = runtime.writeJSON(conn, progress)
+	_ = runtime.emitSignal(conn, protocol.EntityCommand, protocol.ActionProgress, progress)
 }
 
 func (runtime *Runtime) reportCommandProgress(conn *websocket.Conn, commandID string, status string) {
@@ -61,7 +59,6 @@ func (runtime *Runtime) publishCommandResult(
 	execErr error,
 ) {
 	result := protocol.CommandResult{
-		Type:      "command_result",
 		CommandID: command.CommandID,
 		Success:   execErr == nil,
 		Logs:      logs,
@@ -72,11 +69,18 @@ func (runtime *Runtime) publishCommandResult(
 		result.Error = execErr.Error()
 		status = commandStatusFailed
 	}
-	if !isStreamCommandType(command.Type) {
+
+	if protocol.IsStreamingCommand(command.Type) {
+		// A streaming command's result is only meaningful to whoever is
+		// watching right now, so it goes straight out and is not kept.
+		_ = runtime.emitSignal(conn, protocol.EntityCommand, protocol.ActionResult, result)
+	} else {
 		runtime.commandInbox.markResult(result)
-	}
-	if writeErr := runtime.writeJSON(conn, result); writeErr != nil {
-		runtime.log.Error("cannot send command result for command_id=%s: %v", command.CommandID, writeErr)
+		// Queued rather than written: somebody in the dashboard is waiting for
+		// this, and a result lost with the socket leaves them waiting forever.
+		if err := runtime.emitFact(protocol.EntityCommand, protocol.ActionResult, "result-"+command.CommandID, result); err != nil {
+			runtime.log.Error("cannot queue the result of command_id=%s: %v", command.CommandID, err)
+		}
 	}
 	runtime.sendProgress(conn, protocol.CommandProgress{
 		CommandID: command.CommandID,
@@ -87,21 +91,10 @@ func (runtime *Runtime) publishCommandResult(
 	})
 }
 
-// isStreamCommandType marks commands that push their own output frames and
-// therefore must not be replayed from the inbox.
-func isStreamCommandType(commandType string) bool {
-	switch commandType {
-	case "terminal_start", "terminal_input", "terminal_resize", "terminal_stop", "container_logs_tail":
-		return true
-	default:
-		return false
-	}
-}
-
 // replayIdempotentCommand answers a command the agent already handled, which
 // happens when the API retries after a reconnect.
 func (runtime *Runtime) replayIdempotentCommand(conn *websocket.Conn, command protocol.Command) bool {
-	if runtime.commandInbox == nil || command.CommandID == "" || isStreamCommandType(command.Type) {
+	if runtime.commandInbox == nil || command.CommandID == "" || protocol.IsStreamingCommand(command.Type) {
 		return false
 	}
 	receipt, ok := runtime.commandInbox.get(command.CommandID)
@@ -110,7 +103,7 @@ func (runtime *Runtime) replayIdempotentCommand(conn *websocket.Conn, command pr
 	}
 	switch receipt.Status {
 	case commandStatusSucceeded, commandStatusFailed:
-		_ = runtime.writeJSON(conn, receipt.Result)
+		_ = runtime.emitSignal(conn, protocol.EntityCommand, protocol.ActionResult, receipt.Result)
 		runtime.sendProgress(conn, protocol.CommandProgress{
 			CommandID: command.CommandID,
 			Status:    receipt.Status,

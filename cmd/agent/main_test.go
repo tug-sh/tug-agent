@@ -1,53 +1,25 @@
 package main
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 
 	"tug.sh/services/agent/internal/config"
 )
 
-func TestRunStart_Unconfigured(t *testing.T) {
-	tempDir := t.TempDir()
-	envPath := filepath.Join(tempDir, "agent.env")
+// An unpaired machine cannot start: there is nothing to authenticate with, and
+// silently pairing itself is exactly the behaviour that let an agent invent an
+// identity nobody had asked for.
+func TestStartRefusesAnUnpairedMachine(t *testing.T) {
+	settings := config.Config{AgentEnvPath: filepath.Join(t.TempDir(), "agent.env")}
 
-	cfg := config.Config{
-		ServerID:     "",
-		AgentToken:   "",
-		AgentEnvPath: envPath,
-		DashboardURL: "https://app.tug.sh",
-	}
-
-	err := runStart(cfg)
-	if err != nil {
-		t.Fatalf("expected runStart to succeed when unconfigured, got: %v", err)
-	}
-
-	if _, err := os.Stat(envPath); os.IsNotExist(err) {
-		t.Errorf("expected environment file to be created at %s", envPath)
+	if err := runStart(settings); err == nil {
+		t.Fatal("runStart succeeded without a pairing")
 	}
 }
 
-func TestRunStart_Configured(t *testing.T) {
-	tempDir := t.TempDir()
-	envPath := filepath.Join(tempDir, "agent.env")
-
-	cfg := config.Config{
-		ServerID:     "srv_test_1234",
-		AgentToken:   "agtv2.c3J2X3Rlc3RfMTIzNA.1234567890abcdef",
-		AgentEnvPath: envPath,
-	}
-
-	err := runStart(cfg)
-	if err != nil {
-		t.Fatalf("expected runStart to succeed when configured, got: %v", err)
-	}
-}
-
-func TestAgentVersion(t *testing.T) {
-	cfg := config.Load()
-	if cfg.AgentVersion != "1.1.0" {
-		t.Errorf("expected AgentVersion to be 1.1.0, got: %s", cfg.AgentVersion)
+func TestAgentVersionIsSet(t *testing.T) {
+	if version := config.Load().AgentVersion; version == "" {
+		t.Error("the agent reports no version, so the dashboard cannot offer updates")
 	}
 }

@@ -14,7 +14,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"tug.sh/services/agent/internal/protocol"
+	"tug.sh/pkg/protocol"
 	"tug.sh/services/agent/internal/sandbox"
 	"tug.sh/services/agent/internal/system"
 )
@@ -27,26 +27,41 @@ const (
 	snapshotBacklogLimit = 24
 )
 
-// sendHandshake pushes the full host snapshot. enqueueSnapshot additionally
-// stores it in the durable event queue, which is what makes a snapshot survive
-// a dropped connection.
-func (runtime *Runtime) sendHandshake(conn *websocket.Conn, enqueueSnapshot bool) error {
-	hello, err := runtime.buildHandshake()
+// sendSnapshot reports the whole machine: host facts, resources and every
+// container. It is a fact, so it goes through the durable queue and the API
+// acknowledges it; the flush loop puts it on the wire.
+//
+// The old agent wrote the handshake directly to the socket *and* queued a copy,
+// which is why a reconnecting agent could apply two snapshots a few seconds
+// apart and undo state in between.
+func (runtime *Runtime) sendSnapshot() error {
+	hello, err := runtime.buildSnapshot()
 	if err != nil {
 		return err
 	}
-
-	if err := runtime.writeJSON(conn, hello); err != nil {
-		return fmt.Errorf("cannot write handshake: %w", err)
+	if runtime.snapshotWouldPileUp() {
+		return nil
 	}
-	if runtime.config.ProtocolV2Enabled && enqueueSnapshot {
-		runtime.enqueueSnapshotEvent(hello)
+	if err := runtime.emitFact(protocol.EntityRuntime, protocol.ActionSnapshot, "", hello); err != nil {
+		return err
 	}
-	runtime.log.Debug("handshake payload sent: containers=%d", len(hello.Containers))
+	runtime.log.Debug("snapshot queued: containers=%d", len(hello.Containers))
 	return nil
 }
 
-func (runtime *Runtime) buildHandshake() (protocol.Handshake, error) {
+// snapshotWouldPileUp declines to add another full snapshot when one is already
+// waiting or the queue is deep. A snapshot is the largest message the agent
+// sends and repeating it only slows the drain.
+func (runtime *Runtime) snapshotWouldPileUp() bool {
+	pending := runtime.eventQueue.PendingCount()
+	if pending <= snapshotBacklogLimit && !runtime.eventQueue.HasPendingSnapshot() {
+		return false
+	}
+	runtime.log.Debug("snapshot skipped: pending=%d", pending)
+	return true
+}
+
+func (runtime *Runtime) buildSnapshot() (protocol.Handshake, error) {
 	publicIP, _ := fetchPublicIP()
 	localIP := detectLocalIP()
 	dockerVersion, _ := detectDockerVersion()
@@ -68,9 +83,6 @@ func (runtime *Runtime) buildHandshake() (protocol.Handshake, error) {
 	)
 
 	return protocol.Handshake{
-		Type:           "handshake",
-		ServerID:       runtime.config.ServerID,
-		WorkspaceID:    runtime.config.WorkspaceID,
 		HostName:       hostName,
 		AgentVersion:   runtime.config.AgentVersion,
 		OS:             goruntime.GOOS,
@@ -85,7 +97,6 @@ func (runtime *Runtime) buildHandshake() (protocol.Handshake, error) {
 		DockerVersion:  dockerVersion,
 		Networks:       networks,
 		Containers:     containers,
-		ProtocolCaps:   []string{"command_inbox", "ws_ping", "event_class"},
 	}, nil
 }
 
@@ -95,9 +106,6 @@ func (runtime *Runtime) sendHeartbeat(conn *websocket.Conn) error {
 	diskFree, diskTotal, _ := system.DiskStats("/")
 
 	heartbeat := protocol.Heartbeat{
-		Type:           "heartbeat",
-		ServerID:       strings.TrimSpace(runtime.config.ServerID),
-		WorkspaceID:    strings.TrimSpace(runtime.config.WorkspaceID),
 		AgentVersion:   strings.TrimSpace(runtime.config.AgentVersion),
 		SentAtUnix:     time.Now().Unix(),
 		CPUPercent:     cpuPct,
@@ -106,7 +114,7 @@ func (runtime *Runtime) sendHeartbeat(conn *websocket.Conn) error {
 		DiskFreeBytes:  diskFree,
 		DiskTotalBytes: diskTotal,
 	}
-	if err := runtime.writeJSON(conn, heartbeat); err != nil {
+	if err := runtime.emitSignal(conn, protocol.EntityRuntime, protocol.ActionHeartbeat, heartbeat); err != nil {
 		return fmt.Errorf("cannot write heartbeat: %w", err)
 	}
 	return nil
