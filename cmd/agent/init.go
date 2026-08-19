@@ -78,12 +78,11 @@ func generateInitData(cfg config.Config) (initData, error) {
 	}
 	serverName := slugify(hostName)
 
-	randomSuffix, randomErr := randomHex("", 4)
-	if randomErr != nil {
-		return initData{}, randomErr
-	}
 	// Always create a new server_id on init so deleted/blocked IDs are not reused.
-	serverID := fmt.Sprintf("srv_%s_%s", serverName, randomSuffix)
+	serverID, idErr := newServerID()
+	if idErr != nil {
+		return initData{}, idErr
+	}
 	agentToken, err := generateAgentToken(serverID)
 	if err != nil {
 		return initData{}, err
@@ -238,6 +237,48 @@ func readAgentEnv(path string) (map[string]string, error) {
 		values[key] = strings.TrimSpace(parts[1])
 	}
 	return values, nil
+}
+
+// Upper and lower case plus digits, the same shape as a YouTube video id: short
+// enough to fit in a URL and still worth 71 bits over twelve characters.
+const (
+	serverIDAlphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	serverIDLength   = 12
+)
+
+// newServerID mints an opaque identifier for this machine. The host name is
+// deliberately left out: an ID lives as long as the pairing, while a host can be
+// renamed, and two unrelated machines routinely answer to the same name.
+func newServerID() (string, error) {
+	return randomBase62(serverIDLength)
+}
+
+func randomBase62(length int) (string, error) {
+	if length <= 0 {
+		return "", errors.New("invalid identifier length")
+	}
+	// 256 is not a multiple of 62, so the bytes above the last whole block would
+	// make the first few characters of the alphabet more likely. Those are drawn
+	// again instead.
+	const largestUnbiasedByte = 256 - (256 % len(serverIDAlphabet))
+
+	identifier := make([]byte, 0, length)
+	buffer := make([]byte, length)
+	for len(identifier) < length {
+		if _, err := rand.Read(buffer); err != nil {
+			return "", fmt.Errorf("cannot generate random bytes: %w", err)
+		}
+		for _, value := range buffer {
+			if int(value) >= largestUnbiasedByte {
+				continue
+			}
+			identifier = append(identifier, serverIDAlphabet[int(value)%len(serverIDAlphabet)])
+			if len(identifier) == length {
+				break
+			}
+		}
+	}
+	return string(identifier), nil
 }
 
 func randomHex(prefix string, byteLength int) (string, error) {
