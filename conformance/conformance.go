@@ -22,6 +22,7 @@ import (
 
 	"tug.sh/services/agent/internal/agent"
 	"tug.sh/services/agent/internal/config"
+	"tug.sh/services/agent/internal/pairing"
 )
 
 // Options describes the agent a test wants to start. Everything else is taken
@@ -105,4 +106,14 @@ func settings(options Options) config.Config {
 		OutboxPath:         filepath.Join(options.StateDir, "outbox.json"),
 		CommandInboxPath:   filepath.Join(options.StateDir, "command-inbox.json"),
 	}
+}
+
+// Claim performs the pairing exchange exactly as `tug init` does, so the API
+// can check that the code it hands out is one this agent can actually redeem.
+func Claim(ctx context.Context, apiBaseURL, code string) (serverID, token string, err error) {
+	credential, err := pairing.Claim(ctx, apiBaseURL, pairing.Normalize(code))
+	if err != nil {
+		return "", "", err
+	}
+	return credential.ServerID, credential.AgentToken, nil
 }

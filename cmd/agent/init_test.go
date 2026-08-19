@@ -9,24 +9,45 @@ import (
 	"tug.sh/services/agent/internal/config"
 )
 
-func TestInitNeedsBothHalvesOfThePairing(t *testing.T) {
-	for _, args := range [][]string{
-		{"init"},
-		{"init", "onlyTheServerID"},
-	} {
-		if _, _, err := pairingArguments(args); err == nil {
-			t.Errorf("pairingArguments(%v) succeeded, want the usage message", args)
+// Restoring a machine from credentials somebody already holds must keep
+// working, and it must not go anywhere near the network.
+func TestInitStillAcceptsAPairingGivenInFull(t *testing.T) {
+	settings := config.Config{APIBaseURL: "http://127.0.0.1:1"}
+
+	serverID, token, err := resolvePairing(settings, []string{"init", "abc123", "tug_deadbeef"})
+	if err != nil {
+		t.Fatalf("resolvePairing returned %v", err)
+	}
+	if serverID != "abc123" || token != "tug_deadbeef" {
+		t.Fatalf("got %q %q, want the two positional arguments", serverID, token)
+	}
+}
+
+// An unattended install has no terminal, so the code comes from the
+// environment. Anything that is not a code is rejected before a round trip.
+func TestInitRefusesSomethingThatIsNotACode(t *testing.T) {
+	settings := config.Config{APIBaseURL: "http://127.0.0.1:1", DashboardURL: "https://app.tug.sh"}
+
+	for _, supplied := range []string{"12345", "1234567", "not-a-code"} {
+		t.Setenv("TUG_CODE", supplied)
+		if _, _, err := resolvePairing(settings, []string{"init"}); err == nil {
+			t.Errorf("resolvePairing accepted %q as a code", supplied)
 		}
 	}
 }
 
-func TestInitReadsThePairingPositionally(t *testing.T) {
-	serverID, token, err := pairingArguments([]string{"init", "abc123", "tug_deadbeef"})
-	if err != nil {
-		t.Fatalf("pairingArguments returned %v", err)
+// The dashboard shows the code grouped for reading, and pasting it back has to
+// work as typed.
+func TestACodeIsReadAsItIsShown(t *testing.T) {
+	t.Setenv("TUG_CODE", "418 302")
+	settings := config.Config{APIBaseURL: "http://127.0.0.1:1", DashboardURL: "https://app.tug.sh"}
+
+	_, _, err := resolvePairing(settings, []string{"init"})
+	if err == nil {
+		t.Fatal("the pairing succeeded against an address with nothing behind it")
 	}
-	if serverID != "abc123" || token != "tug_deadbeef" {
-		t.Fatalf("got %q %q, want the two positional arguments", serverID, token)
+	if strings.Contains(err.Error(), "digits") {
+		t.Fatalf("a grouped code was rejected before it was ever sent: %v", err)
 	}
 }
 

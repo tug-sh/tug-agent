@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -10,17 +11,19 @@ import (
 	"strings"
 
 	"tug.sh/services/agent/internal/config"
+	"tug.sh/services/agent/internal/pairing"
 )
 
-// Pairing works one way now: the dashboard creates the server record and hands
-// out both the identifier and the token, which the installer passes here.
+// Pairing works one way now: the dashboard creates the server record, shows a
+// short code, and this machine exchanges that code for a token it keeps. The
+// token is never typed or pasted by anyone.
 //
 // The agent used to mint its own identifier and encode it inside the token, so
 // rotating a token could change which machine the agent claimed to be, and two
 // hosts with the same name could collide. It no longer decides anything about
 // its own identity.
 func runInit(cfg config.Config, args []string) error {
-	serverID, token, err := pairingArguments(args)
+	serverID, token, err := resolvePairing(cfg, args)
 	if err != nil {
 		return err
 	}
@@ -43,27 +46,76 @@ func runInit(cfg config.Config, args []string) error {
 	return nil
 }
 
-// pairingArguments reads `tug init <server-id> <token>`. Both come from the
-// command the dashboard shows when a server is added.
-func pairingArguments(args []string) (serverID, token string, err error) {
+// resolvePairing decides how this machine learns who it is.
+//
+// Two arguments are the manual route, kept for anyone restoring a machine from
+// credentials they already hold. Everything else goes through a code, which is
+// what the dashboard hands out.
+func resolvePairing(cfg config.Config, args []string) (serverID, token string, err error) {
+	positional := positionalArguments(args)
+	if len(positional) >= 2 {
+		return positional[0], positional[1], nil
+	}
+
+	code, err := pairingCode(cfg, positional)
+	if err != nil {
+		return "", "", err
+	}
+	credential, err := pairing.Claim(context.Background(), cfg.APIBaseURL, code)
+	if err != nil {
+		return "", "", err
+	}
+	// A deployment that answers on a different socket says so here, and the
+	// answer is written into the settings file with the rest of the pairing.
+	if credential.WebSocketURL != "" {
+		cfg.APIWebSocketURL = credential.WebSocketURL
+	}
+	return credential.ServerID, credential.AgentToken, nil
+}
+
+// pairingCode takes the code from wherever it was supplied: an argument, the
+// environment for unattended installs, or the person at the keyboard.
+func pairingCode(cfg config.Config, positional []string) (string, error) {
+	if len(positional) == 1 {
+		return validCode(positional[0])
+	}
+	if supplied := strings.TrimSpace(os.Getenv("TUG_CODE")); supplied != "" {
+		return validCode(supplied)
+	}
+
+	code, err := pairing.Ask(os.Stdout, cfg.DashboardURL)
+	if errors.Is(err, pairing.ErrNoTerminal) {
+		return "", fmt.Errorf(
+			"there is no terminal to ask for the pairing code.\n"+
+				"Add a server at %s and pass the code it shows:\n"+
+				"  sudo TUG_CODE=418302 tug init",
+			cfg.DashboardURL,
+		)
+	}
+	return code, err
+}
+
+func validCode(raw string) (string, error) {
+	code := pairing.Normalize(raw)
+	if len(code) != pairing.CodeDigits {
+		return "", fmt.Errorf("a pairing code is %d digits; got %q", pairing.CodeDigits, raw)
+	}
+	return code, nil
+}
+
+func positionalArguments(args []string) []string {
 	positional := make([]string, 0, 2)
 	for _, arg := range args[1:] {
 		if trimmed := strings.TrimSpace(arg); trimmed != "" && !strings.HasPrefix(trimmed, "-") {
 			positional = append(positional, trimmed)
 		}
 	}
-	if len(positional) < 2 {
-		return "", "", errors.New(
-			"usage: tug init <server-id> <token>\n" +
-				"Add a server in the dashboard; it shows the command to paste here",
-		)
-	}
-	return positional[0], positional[1], nil
+	return positional
 }
 
 func runStart(cfg config.Config) error {
 	if strings.TrimSpace(cfg.ServerID) == "" || strings.TrimSpace(cfg.AgentToken) == "" {
-		return errors.New("this machine is not paired yet; run: tug init <server-id> <token>")
+		return errors.New("this machine is not paired yet; run: sudo tug init")
 	}
 	fmt.Println("Starting the tug agent service...")
 	fmt.Printf("   %s\n", tryStartAgentService())

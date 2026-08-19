@@ -14,10 +14,13 @@ var embeddedVersion string
 var defaultAgentVersion = strings.TrimSpace(embeddedVersion)
 
 type Config struct {
-	AgentVersion       string
-	ServerID           string
-	AgentToken         string
-	APIWebSocketURL    string
+	AgentVersion    string
+	ServerID        string
+	AgentToken      string
+	APIWebSocketURL string
+	// APIBaseURL is the plain HTTP address of the same control plane. Pairing
+	// happens over HTTP before there is any credential to open a socket with.
+	APIBaseURL         string
 	DashboardURL       string
 	AgentEnvPath       string
 	Verbose            bool
@@ -85,11 +88,13 @@ func Load() Config {
 	reconnectBaseDefault := 1 * time.Second
 	reconnectMaxDefault := 30 * time.Second
 	reconnectJitterDefault := 20
+	websocketURL := envOrDefault("TUG_API_WS_URL", "wss://api.tug.sh/ws/agents")
 	cfg := Config{
 		AgentVersion:       envOrDefault("TUG_AGENT_VERSION", defaultAgentVersion),
 		ServerID:           serverID,
 		AgentToken:         agentToken,
-		APIWebSocketURL:    envOrDefault("TUG_API_WS_URL", "wss://api.tug.sh/ws/agents"),
+		APIWebSocketURL:    websocketURL,
+		APIBaseURL:         envOrDefault("TUG_API_URL", httpAddressOf(websocketURL)),
 		DashboardURL:       envOrDefault("TUG_DASHBOARD_URL", "https://app.tug.sh"),
 		AgentEnvPath:       envOrDefault("TUG_AGENT_ENV_PATH", "/etc/tug/agent.env"),
 		Verbose:            envBoolOrDefault("TUG_VERBOSE", true),
@@ -122,6 +127,23 @@ func withConsistentIntervals(cfg Config) Config {
 		cfg.ReconnectMaxDelay = cfg.ReconnectBaseDelay
 	}
 	return cfg
+}
+
+// httpAddressOf turns the socket endpoint into the HTTP root of the same
+// deployment, so pointing an agent at a private control plane stays one
+// setting rather than two that can disagree.
+func httpAddressOf(websocketURL string) string {
+	address := strings.TrimSpace(websocketURL)
+	switch {
+	case strings.HasPrefix(address, "wss://"):
+		address = "https://" + strings.TrimPrefix(address, "wss://")
+	case strings.HasPrefix(address, "ws://"):
+		address = "http://" + strings.TrimPrefix(address, "ws://")
+	}
+	if root, _, found := strings.Cut(address, "/ws/agents"); found {
+		return root
+	}
+	return strings.TrimRight(address, "/")
 }
 
 func envOrDefault(key, fallback string) string {
