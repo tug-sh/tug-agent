@@ -1,4 +1,4 @@
-package agent
+package sandbox
 
 import (
 	"fmt"
@@ -6,30 +6,31 @@ import (
 	"path/filepath"
 )
 
+// FileManager performs file operations confined to the sandbox root.
 type FileManager struct{}
 
 func NewFileManager() *FileManager {
 	return &FileManager{}
 }
 
-func (f *FileManager) List(relativePath string) ([]os.DirEntry, error) {
-	path, err := ResolveSandboxPath(relativePath)
+func (files *FileManager) List(relativePath string) ([]os.DirEntry, error) {
+	path, err := ResolvePath(relativePath)
 	if err != nil {
 		return nil, err
 	}
 	return os.ReadDir(path)
 }
 
-func (f *FileManager) Read(relativePath string) ([]byte, error) {
-	path, err := ResolveSandboxPath(relativePath)
+func (files *FileManager) Read(relativePath string) ([]byte, error) {
+	path, err := ResolvePath(relativePath)
 	if err != nil {
 		return nil, err
 	}
 	return os.ReadFile(path)
 }
 
-func (f *FileManager) Write(relativePath string, data []byte, mode os.FileMode) error {
-	path, err := ResolveSandboxPath(relativePath)
+func (files *FileManager) Write(relativePath string, data []byte, mode os.FileMode) error {
+	path, err := ResolvePath(relativePath)
 	if err != nil {
 		return err
 	}
@@ -42,8 +43,8 @@ func (f *FileManager) Write(relativePath string, data []byte, mode os.FileMode) 
 	return nil
 }
 
-func (f *FileManager) Delete(relativePath string) error {
-	path, err := ResolveSandboxPath(relativePath)
+func (files *FileManager) Delete(relativePath string) error {
+	path, err := ResolvePath(relativePath)
 	if err != nil {
 		return err
 	}

@@ -25,6 +25,9 @@ import (
 
 	"tug.sh/services/agent/internal/agent"
 	"tug.sh/services/agent/internal/config"
+	"tug.sh/services/agent/internal/lifecycle"
+	"tug.sh/services/agent/internal/logging"
+	"tug.sh/services/agent/internal/sandbox"
 )
 
 func main() {
@@ -35,74 +38,23 @@ func main() {
 	}
 
 	if err := loadAgentEnvFile(); err != nil {
-		log.Fatalf("failed to load environment file: %v", err)
+		logging.Fatal("failed to load environment file: %v", err)
 	}
 
 	cfg := config.Load()
-	command := ""
-	if len(args) > 0 && !strings.HasPrefix(strings.TrimSpace(args[0]), "-") {
-		command = strings.TrimSpace(args[0])
+	logging.SetDefault(agent.LoggerForConfig(cfg))
+	command := parseCommand(args)
+	if handler, isUserCommand := cliCommands()[command]; isUserCommand {
+		if err := handler.run(cfg, args); err != nil {
+			logging.Fatal("%s failed: %v", command, err)
+		}
+		if handler.success != "" {
+			fmt.Println(handler.success)
+		}
+		return
 	}
 
 	switch command {
-	case "help":
-		printHelp(cfg.AgentVersion)
-		return
-	case "version":
-		fmt.Printf("tug-agent v%s\n", cfg.AgentVersion)
-		return
-	case "update":
-		if err := runUpdate(cfg); err != nil {
-			log.Fatalf("update failed: %v", err)
-		}
-		fmt.Println("Agent updated successfully and restarted.")
-		return
-	case "init":
-		if err := runInit(cfg); err != nil {
-			log.Fatalf("init failed: %v", err)
-		}
-		return
-	case "start":
-		if err := runStart(cfg); err != nil {
-			log.Fatalf("start failed: %v", err)
-		}
-		return
-	case "status":
-		if err := runStatus(); err != nil {
-			log.Fatalf("status failed: %v", err)
-		}
-		return
-	case "stop":
-		if err := stopAgentService(); err != nil {
-			log.Fatalf("stop failed: %v", err)
-		}
-		fmt.Println("Agent stopped.")
-		return
-	case "restart":
-		if err := runRestart(cfg); err != nil {
-			log.Fatalf("restart failed: %v", err)
-		}
-		return
-	case "logs":
-		if err := runLogs(parseLogsLimit(args)); err != nil {
-			log.Fatalf("logs failed: %v", err)
-		}
-		return
-	case "disconnect":
-		if err := stopAgentService(); err != nil {
-			log.Printf("warning: cannot stop service automatically: %v", err)
-		}
-		if err := clearAgentConnectionState(cfg); err != nil {
-			log.Fatalf("disconnect failed: %v", err)
-		}
-		fmt.Println("Agent disconnected from dashboard. Run `tug init` to reconnect.")
-		return
-	case "remove":
-		if err := agent.RunDetachedUninstall(false); err != nil {
-			log.Fatalf("remove failed: %v", err)
-		}
-		fmt.Println("Agent uninstall started in background.")
-		return
 	case "run", "daemon", "run-service", "service":
 	case "":
 		if !(isSystemdService() || (!isTerminal(os.Stdout) && !isTerminal(os.Stdin))) {
@@ -115,9 +67,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	cfg = config.Load()
-
-	logPath := filepath.Join(agent.GetDataDir(), "logs", "agent.log")
+	logPath := filepath.Join(sandbox.DataDir(), "logs", "agent.log")
 	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err == nil {
 		log.SetOutput(io.MultiWriter(os.Stdout, &lumberjack.Logger{
 			Filename:   logPath,
@@ -130,36 +80,101 @@ func main() {
 
 	releaseLock, err := acquireSingleInstanceLock()
 	if err != nil {
-		log.Fatalf("agent is already running: %v", err)
+		logging.Fatal("agent is already running: %v", err)
 	}
 	defer releaseLock()
-	if cfg.Verbose {
-		log.Printf(
-			"agent verbose enabled: server_id=%s workspace_id=%s ws_url=%s env_path=%s profile=%s heartbeat=%s self_heal=%s reconnect_base=%s reconnect_max=%s jitter_pct=%d",
-			cfg.ServerID,
-			cfg.WorkspaceID,
-			cfg.APIWebSocketURL,
-			cfg.AgentEnvPath,
-			cfg.TrafficProfile,
-			cfg.HeartbeatInterval,
-			cfg.SelfHealInterval,
-			cfg.ReconnectBaseDelay,
-			cfg.ReconnectMaxDelay,
-			cfg.ReconnectJitterPct,
-		)
-	}
+	logging.Debug(
+		"agent startup: server_id=%s workspace_id=%s ws_url=%s env_path=%s profile=%s heartbeat=%s self_heal=%s reconnect_base=%s reconnect_max=%s jitter_pct=%d",
+		cfg.ServerID,
+		cfg.WorkspaceID,
+		cfg.APIWebSocketURL,
+		cfg.AgentEnvPath,
+		cfg.TrafficProfile,
+		cfg.HeartbeatInterval,
+		cfg.SelfHealInterval,
+		cfg.ReconnectBaseDelay,
+		cfg.ReconnectMaxDelay,
+		cfg.ReconnectJitterPct,
+	)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	runtimeAgent, err := agent.NewRuntime(cfg)
 	if err != nil {
-		log.Fatalf("failed to create runtime: %v", err)
+		logging.Fatal("failed to create runtime: %v", err)
 	}
 
 	if err := runtimeAgent.Run(ctx); err != nil {
-		log.Fatalf("agent run failed: %v", err)
+		logging.Fatal("agent run failed: %v", err)
 	}
+}
+
+// cliCommand is one command a user runs from the shell. Failures are reported
+// the same way for all of them, so a handler only returns an error.
+type cliCommand struct {
+	run     func(cfg config.Config, args []string) error
+	success string
+}
+
+// cliCommands lists everything that runs and exits, as opposed to the daemon
+// commands handled by main.
+func cliCommands() map[string]cliCommand {
+	return map[string]cliCommand{
+		"help": {run: func(cfg config.Config, _ []string) error {
+			printHelp(cfg.AgentVersion)
+			return nil
+		}},
+		"version": {run: func(cfg config.Config, _ []string) error {
+			fmt.Printf("tug-agent v%s\n", cfg.AgentVersion)
+			return nil
+		}},
+		"update": {
+			run:     func(cfg config.Config, _ []string) error { return runUpdate(cfg) },
+			success: "Agent updated successfully and restarted.",
+		},
+		"init":   {run: func(cfg config.Config, _ []string) error { return runInit(cfg) }},
+		"start":  {run: func(cfg config.Config, _ []string) error { return runStart(cfg) }},
+		"status": {run: func(config.Config, []string) error { return runStatus() }},
+		"stop": {
+			run:     func(config.Config, []string) error { return stopAgentService() },
+			success: "Agent stopped.",
+		},
+		"restart": {run: func(cfg config.Config, _ []string) error { return runRestart(cfg) }},
+		"logs": {run: func(_ config.Config, args []string) error {
+			return runLogs(parseLogsLimit(args))
+		}},
+		"disconnect": {
+			run:     func(cfg config.Config, _ []string) error { return runDisconnect(cfg) },
+			success: "Agent disconnected from dashboard. Run `tug init` to reconnect.",
+		},
+		"remove": {
+			run:     func(config.Config, []string) error { return lifecycle.RunDetachedUninstall(false) },
+			success: "Agent uninstall started in background.",
+		},
+	}
+}
+
+// runDisconnect clears the pairing even when the service cannot be stopped,
+// so a broken unit never leaves the agent linked to the dashboard.
+func runDisconnect(cfg config.Config) error {
+	if err := stopAgentService(); err != nil {
+		logging.Warn("cannot stop service automatically: %v", err)
+	}
+	return clearAgentConnectionState(cfg)
+}
+
+// parseCommand reads the positional subcommand. Leading flags belong to the
+// daemon invocation, so anything starting with "-" is not a command.
+func parseCommand(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	first := strings.TrimSpace(args[0])
+	if strings.HasPrefix(first, "-") {
+		return ""
+	}
+	return first
 }
 
 func hasToken(args []string, token string) bool {
@@ -316,7 +331,7 @@ const defaultAgentLogLines = 100
 const maxAgentLogLines = 10000
 
 func agentLogPath() string {
-	return filepath.Join(agent.GetDataDir(), "logs", "agent.log")
+	return filepath.Join(sandbox.DataDir(), "logs", "agent.log")
 }
 
 func parseLogsLimit(args []string) int {
@@ -507,7 +522,7 @@ func acquireSingleInstanceLock() (func(), error) {
 				shouldKill := false
 				if isSystemdService() || !isTerminal(os.Stdin) {
 					// Non-interactive / systemd mode: kill old process automatically on restart
-					log.Printf("[lock] terminating existing agent process PID %s to start new instance", pidStr)
+					logging.Info("[lock] terminating existing agent process PID %s to start new instance", pidStr)
 					shouldKill = true
 				} else {
 					// Interactive terminal: ask user
@@ -563,7 +578,7 @@ func runUpdate(cfg config.Config) error {
 	binaryURL := fmt.Sprintf("%s/releases/%s?version=latest", baseURL, binaryName)
 
 	fmt.Printf("Updating agent from: %s\n", binaryURL)
-	updater := agent.NewUpdater()
+	updater := lifecycle.NewUpdater()
 	return updater.SafeUpdate(context.Background(), binaryURL)
 }
 
@@ -587,11 +602,11 @@ func printHelp(version string) {
 	fmt.Println()
 }
 
-func isTerminal(f *os.File) bool {
-	if f == nil {
+func isTerminal(file *os.File) bool {
+	if file == nil {
 		return false
 	}
-	stat, err := f.Stat()
+	stat, err := file.Stat()
 	if err != nil {
 		return false
 	}

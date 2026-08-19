@@ -3,238 +3,281 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"tug.sh/services/agent/internal/docker"
+	"tug.sh/services/agent/internal/logging"
+	"tug.sh/services/agent/internal/protocol"
+	"tug.sh/services/agent/internal/sandbox"
+	"tug.sh/services/agent/internal/shell"
 )
 
-func (r *Runtime) handleGitDeploy(ctx context.Context, cmd inboundCommand) ([]string, error) {
+const (
+	defaultDeployBranch  = "main"
+	defaultComposeFile   = "docker-compose.yml"
+	deployedFileMode     = 0o644
+	deployedDirMode      = 0o755
+	gitDeployLogPrefix   = "[git_deploy] "
+	dockerfileComposeGen = "services:\n  app:\n    build:\n      context: .\n      dockerfile: Dockerfile\n    restart: always\n"
+)
+
+// alternativeComposeFiles are checked when the requested compose file is absent,
+// covering the naming variants commonly found in repositories.
+var alternativeComposeFiles = []string{"docker-compose.yaml", "compose.yaml", "compose.yml"}
+
+func (runtime *Runtime) handleGitDeploy(ctx context.Context, cmd protocol.Command) ([]string, error) {
 	if cmd.ProjectID == "" {
-		return nil, fmt.Errorf("project_id is required for git_deploy")
+		return nil, errors.New("project_id is required for git_deploy")
 	}
+	transcript := logging.NewTranscript().MirrorTo(runtime.log, gitDeployLogPrefix)
+	transcript.Addf("Starting git_deploy for project %s...", cmd.ProjectID)
 
-	logs := []string{}
-	logFn := func(msg string) {
-		logs = append(logs, msg)
-		r.debugf("[git_deploy] %s", msg)
-	}
-
-	logFn(fmt.Sprintf("Starting git_deploy for project %s...", cmd.ProjectID))
-
-	deployDir, err := ResolveSandboxPath(filepath.Join("projects", cmd.ProjectID))
+	deployDir, err := sandbox.ResolvePath(filepath.Join("projects", cmd.ProjectID))
 	if err != nil {
-		return logs, fmt.Errorf("failed to resolve project sandbox path: %w", err)
+		return transcript.Fail("failed to resolve project sandbox path: %w", err)
 	}
-
-	if err := os.MkdirAll(deployDir, 0755); err != nil {
-		return logs, fmt.Errorf("failed to create deployments dir: %w", err)
+	if mkdirErr := os.MkdirAll(deployDir, deployedDirMode); mkdirErr != nil {
+		return transcript.Fail("failed to create deployments dir: %w", mkdirErr)
 	}
-
-	repoURL := cmd.RepoURL
+	repoURL := strings.TrimSpace(cmd.RepoURL)
 	if repoURL == "" {
-		return logs, fmt.Errorf("repo_url is empty")
+		return transcript.Fail("repo_url is empty")
 	}
-
 	branch := cmd.Branch
 	if branch == "" {
-		branch = "main" // fallback
+		branch = defaultDeployBranch
 	}
 
-	// 1. Fetch code
-	// Check if .git subdirectory exists inside deployDir
-	gitMetaDir := filepath.Join(deployDir, ".git")
-	if _, err := os.Stat(gitMetaDir); os.IsNotExist(err) {
-		logFn(fmt.Sprintf("Cloning repo %s (branch %s) into %s...", repoURL, branch, deployDir))
-		
-		// Remove empty directory if os.MkdirAll created it so git clone can populate it cleanly
-		_ = os.RemoveAll(deployDir)
+	if fetchErr := fetchRepository(ctx, transcript, deployDir, repoURL, branch); fetchErr != nil {
+		return transcript.Lines(), fetchErr
+	}
+	syncProjectEnvFile(deployDir, cmd.ProjectID, transcript)
 
-		gitCmd := exec.CommandContext(ctx, "git", "clone", "-b", branch, repoURL, deployDir)
-		if output, err := gitCmd.CombinedOutput(); err != nil {
-			logFn(fmt.Sprintf("git clone failed: %s", string(output)))
-			return logs, fmt.Errorf("git clone failed: %w", err)
-		}
-		logFn("git clone succeeded.")
-	} else {
-		logFn(fmt.Sprintf("Repository exists at %s. Pulling latest from branch %s...", deployDir, branch))
-		
-		// First fetch
-		fetchCmd := exec.CommandContext(ctx, "git", "-C", deployDir, "fetch", "origin", branch)
-		if output, err := fetchCmd.CombinedOutput(); err != nil {
-			logFn(fmt.Sprintf("git fetch failed: %s", string(output)))
-			return logs, fmt.Errorf("git fetch failed: %w", err)
-		}
-		
-		// Then reset hard to ensure clean state
-		resetCmd := exec.CommandContext(ctx, "git", "-C", deployDir, "reset", "--hard", "origin/"+branch)
-		if output, err := resetCmd.CombinedOutput(); err != nil {
-			logFn(fmt.Sprintf("git reset failed: %s", string(output)))
-			return logs, fmt.Errorf("git reset failed: %w", err)
-		}
-		logFn("git pull (fetch+reset) succeeded.")
+	composePath, composeFile, resolveErr := resolveComposeFile(deployDir, cmd.FilePath, transcript)
+	if resolveErr != nil {
+		return transcript.Lines(), resolveErr
 	}
+	mirrorStandardComposeFile(deployDir, composePath)
 
-	// 2. Prepare merged .env file (Git repository .env + Dashboard overrides)
-	syncProjectEnvFile(deployDir, cmd.ProjectID, logFn)
+	deployCmd, description := docker.DeployCommand(ctx, cmd.Command, "-f", composePath, "up", "-d", "--build")
+	transcript.Addf("Deploying %s with: %s", composeFile, description)
+	deployCmd.Dir = deployDir
 
-	// 3. Resolve compose file or Dockerfile
-	targetFile := cmd.FilePath
-	if targetFile == "" {
-		targetFile = "docker-compose.yml"
+	output, deployErr := deployCmd.CombinedOutput()
+	transcript.AddCommandOutput(string(output))
+	if deployErr != nil {
+		wrapped := fmt.Errorf("compose up failed: %v, output: %s", deployErr, string(output))
+		writeDeploymentLog(cmd.ProjectID, cmd.CommandID, transcript.Lines(), wrapped)
+		return transcript.Lines(), wrapped
 	}
-	composePath := filepath.Join(deployDir, targetFile)
-
-	if _, err := os.Stat(composePath); os.IsNotExist(err) {
-		// Fallback checks for common filenames
-		if _, errAlt := os.Stat(filepath.Join(deployDir, "docker-compose.yaml")); errAlt == nil {
-			targetFile = "docker-compose.yaml"
-			composePath = filepath.Join(deployDir, targetFile)
-		} else if _, errAlt := os.Stat(filepath.Join(deployDir, "compose.yaml")); errAlt == nil {
-			targetFile = "compose.yaml"
-			composePath = filepath.Join(deployDir, targetFile)
-		} else if _, errAlt := os.Stat(filepath.Join(deployDir, "compose.yml")); errAlt == nil {
-			targetFile = "compose.yml"
-			composePath = filepath.Join(deployDir, targetFile)
-		} else if _, errAlt := os.Stat(filepath.Join(deployDir, "Dockerfile")); errAlt == nil {
-			// Auto-generate docker-compose.yml for Dockerfile projects
-			logFn("No docker-compose file found, but Dockerfile exists. Auto-generating docker-compose.yml...")
-			genComposeContent := "services:\n  app:\n    build:\n      context: .\n      dockerfile: Dockerfile\n    restart: always\n"
-			_ = os.WriteFile(filepath.Join(deployDir, "docker-compose.yml"), []byte(genComposeContent), 0644)
-			targetFile = "docker-compose.yml"
-			composePath = filepath.Join(deployDir, targetFile)
-		} else {
-			return logs, fmt.Errorf("compose file or Dockerfile '%s' not found in repo after clone", targetFile)
-		}
-	}
-
-	// Ensure standard projects/<ProjectID>/docker-compose.yml exists for dashboard & API editor
-	standardComposePath := filepath.Join(deployDir, "docker-compose.yml")
-	if composePath != standardComposePath {
-		if content, readErr := os.ReadFile(composePath); readErr == nil {
-			_ = os.WriteFile(standardComposePath, content, 0644)
-		}
-	}
-
-	// 4. Execute deployment
-	var dcCmd *exec.Cmd
-	if cmd.Command != "" {
-		logFn(fmt.Sprintf("Running custom command: %s", cmd.Command))
-		dcCmd = exec.CommandContext(ctx, "sh", "-c", cmd.Command)
-	} else {
-		var composeCommand string
-		dcCmd, composeCommand = ComposeCommand(ctx, "-f", composePath, "up", "-d", "--build")
-		logFn(fmt.Sprintf("Running %s -f %s up -d --build...", composeCommand, targetFile))
-	}
-	dcCmd.Dir = deployDir
-	
-	output, err := dcCmd.CombinedOutput()
-	for _, line := range strings.Split(string(output), "\n") {
-		if strings.TrimSpace(line) != "" {
-			logFn(line)
-		}
-	}
-	
-	if err != nil {
-		deployErr := fmt.Errorf("compose up failed: %v, output: %s", err, string(output))
-		writeDeploymentLog(cmd.ProjectID, cmd.CommandID, logs, deployErr)
-		return logs, deployErr
-	}
-	logFn("Deployment completed successfully.")
+	logs, _ := transcript.Done("Deployment completed successfully.")
 	writeDeploymentLog(cmd.ProjectID, cmd.CommandID, logs, nil)
-
 	return logs, nil
 }
 
-func syncProjectEnvFile(deployDir string, projectID string, logFn func(string)) {
-	envVars := map[string]string{}
+func fetchRepository(
+	ctx context.Context,
+	transcript *logging.Transcript,
+	deployDir string,
+	repoURL string,
+	branch string,
+) error {
+	gitMetaDir := filepath.Join(deployDir, ".git")
+	if _, err := os.Stat(gitMetaDir); os.IsNotExist(err) {
+		return cloneRepository(ctx, transcript, deployDir, repoURL, branch)
+	}
+	return pullRepository(ctx, transcript, deployDir, branch)
+}
 
-	// 1. Read existing .env from Git repository if present
+func cloneRepository(
+	ctx context.Context,
+	transcript *logging.Transcript,
+	deployDir string,
+	repoURL string,
+	branch string,
+) error {
+	transcript.Addf("Cloning repo %s (branch %s) into %s...", repoURL, branch, deployDir)
+	// git clone needs to create the directory itself, so drop the empty one
+	// created while preparing the sandbox.
+	_ = os.RemoveAll(deployDir)
+
+	if err := shell.RunTracked(ctx, transcript, "git clone failed", "git", "clone", "-b", branch, repoURL, deployDir); err != nil {
+		return err
+	}
+	transcript.Addf("git clone succeeded.")
+	return nil
+}
+
+// pullRepository refreshes an existing checkout with fetch plus a hard reset,
+// so local drift on the VPS never blocks a deployment.
+func pullRepository(ctx context.Context, transcript *logging.Transcript, deployDir string, branch string) error {
+	transcript.Addf("Repository exists at %s. Pulling latest from branch %s...", deployDir, branch)
+
+	if err := shell.RunTracked(ctx, transcript, "git fetch failed", "git", "-C", deployDir, "fetch", "origin", branch); err != nil {
+		return err
+	}
+	if err := shell.RunTracked(ctx, transcript, "git reset failed", "git", "-C", deployDir, "reset", "--hard", "origin/"+branch); err != nil {
+		return err
+	}
+	transcript.Addf("git pull (fetch+reset) succeeded.")
+	return nil
+}
+
+// resolveComposeFile locates the compose file to deploy, falling back to the
+// common alternative names and finally to a generated file for Dockerfile-only
+// repositories. It returns the absolute path and the file name.
+func resolveComposeFile(
+	deployDir string,
+	requestedFile string,
+	transcript *logging.Transcript,
+) (string, string, error) {
+	requested := requestedFile
+	if requested == "" {
+		requested = defaultComposeFile
+	}
+	candidates := append([]string{requested}, alternativeComposeFiles...)
+	for _, candidate := range candidates {
+		candidatePath := filepath.Join(deployDir, candidate)
+		if _, err := os.Stat(candidatePath); err == nil {
+			return candidatePath, candidate, nil
+		}
+	}
+
+	if _, err := os.Stat(filepath.Join(deployDir, "Dockerfile")); err != nil {
+		return "", "", fmt.Errorf("compose file or Dockerfile '%s' not found in repo after clone", requested)
+	}
+	transcript.Addf("No docker-compose file found, but Dockerfile exists. Auto-generating docker-compose.yml...")
+	generatedPath := filepath.Join(deployDir, defaultComposeFile)
+	_ = os.WriteFile(generatedPath, []byte(dockerfileComposeGen), deployedFileMode)
+	return generatedPath, defaultComposeFile, nil
+}
+
+// mirrorStandardComposeFile keeps projects/<id>/docker-compose.yml in sync with
+// the deployed file, because the dashboard editor reads that fixed path.
+func mirrorStandardComposeFile(deployDir string, composePath string) {
+	standardComposePath := filepath.Join(deployDir, defaultComposeFile)
+	if composePath == standardComposePath {
+		return
+	}
+	content, readErr := os.ReadFile(composePath)
+	if readErr != nil {
+		return
+	}
+	_ = os.WriteFile(standardComposePath, content, deployedFileMode)
+}
+
+// syncProjectEnvFile merges the repository .env with the dashboard overrides and
+// writes the result back, so compose sees a single authoritative env file.
+func syncProjectEnvFile(deployDir string, projectID string, transcript *logging.Transcript) {
 	repoEnvPath := filepath.Join(deployDir, ".env")
-	if data, err := os.ReadFile(repoEnvPath); err == nil {
-		lines := strings.Split(string(data), "\n")
-		for _, line := range lines {
-			trimmed := strings.TrimSpace(line)
-			if trimmed == "" || strings.HasPrefix(trimmed, "#") || !strings.Contains(trimmed, "=") {
-				continue
-			}
-			idx := strings.Index(trimmed, "=")
-			k := strings.TrimSpace(trimmed[:idx])
-			v := strings.TrimSpace(trimmed[idx+1:])
-			if k != "" {
-				envVars[k] = v
-			}
-		}
-		if len(envVars) > 0 {
-			logFn(fmt.Sprintf("Loaded %d base environment variables from repository .env", len(envVars)))
-		}
-	}
-
-	// 2. Read dashboard overrides from projects/<project_id>/env.json
-	dashboardEnvPath, err := ResolveSandboxPath(filepath.Join("projects", projectID, "env.json"))
-	if err == nil {
-		if data, err := os.ReadFile(dashboardEnvPath); err == nil {
-			dashboardVars := map[string]string{}
-			if err := json.Unmarshal(data, &dashboardVars); err == nil {
-				overrideCount := 0
-				for k, v := range dashboardVars {
-					if _, exists := envVars[k]; exists {
-						overrideCount++
-					}
-					envVars[k] = v
-				}
-				if len(dashboardVars) > 0 {
-					logFn(fmt.Sprintf("Applied %d environment variables from dashboard (%d overrides)", len(dashboardVars), overrideCount))
-				}
-			}
-		}
-	}
-
-	// 3. Write merged .env file to deployDir/.env
+	envVars := readEnvFile(repoEnvPath)
 	if len(envVars) > 0 {
-		var sb strings.Builder
-		sb.WriteString("# Generated by Tug.sh (Git .env + Dashboard overrides)\n")
-		for k, v := range envVars {
-			sb.WriteString(fmt.Sprintf("%s=%s\n", k, v))
-		}
-		_ = os.WriteFile(repoEnvPath, []byte(sb.String()), 0644)
+		transcript.Addf("Loaded %d base environment variables from repository .env", len(envVars))
 	}
+
+	dashboardVars := readDashboardEnvOverrides(projectID)
+	if len(dashboardVars) > 0 {
+		overrideCount := 0
+		for key, value := range dashboardVars {
+			if _, exists := envVars[key]; exists {
+				overrideCount++
+			}
+			envVars[key] = value
+		}
+		transcript.Addf(
+			"Applied %d environment variables from dashboard (%d overrides)",
+			len(dashboardVars),
+			overrideCount,
+		)
+	}
+
+	if len(envVars) == 0 {
+		return
+	}
+	var builder strings.Builder
+	builder.WriteString("# Generated by Tug.sh (Git .env + Dashboard overrides)\n")
+	for key, value := range envVars {
+		builder.WriteString(fmt.Sprintf("%s=%s\n", key, value))
+	}
+	_ = os.WriteFile(repoEnvPath, []byte(builder.String()), deployedFileMode)
+}
+
+func readEnvFile(path string) map[string]string {
+	envVars := map[string]string{}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return envVars
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		separatorIndex := strings.Index(trimmed, "=")
+		if separatorIndex <= 0 {
+			continue
+		}
+		key := strings.TrimSpace(trimmed[:separatorIndex])
+		if key == "" {
+			continue
+		}
+		envVars[key] = strings.TrimSpace(trimmed[separatorIndex+1:])
+	}
+	return envVars
+}
+
+func readDashboardEnvOverrides(projectID string) map[string]string {
+	overrides := map[string]string{}
+	dashboardEnvPath, err := sandbox.ResolvePath(filepath.Join("projects", projectID, "env.json"))
+	if err != nil {
+		return overrides
+	}
+	data, readErr := os.ReadFile(dashboardEnvPath)
+	if readErr != nil {
+		return overrides
+	}
+	if unmarshalErr := json.Unmarshal(data, &overrides); unmarshalErr != nil {
+		return map[string]string{}
+	}
+	return overrides
 }
 
 func writeDeploymentLog(projectID string, commandID string, logs []string, deployErr error) {
 	if strings.TrimSpace(projectID) == "" {
 		return
 	}
-	logsDir, err := ResolveSandboxPath(filepath.Join("projects", projectID, "logs"))
+	logsDir, err := sandbox.ResolvePath(filepath.Join("projects", projectID, "logs"))
 	if err != nil {
 		return
 	}
-	_ = os.MkdirAll(logsDir, 0755)
+	_ = os.MkdirAll(logsDir, deployedDirMode)
 
 	now := time.Now()
-	timestampStr := now.Format("20060102-150405")
-	logFile := filepath.Join(logsDir, fmt.Sprintf("deploy-%s.log", timestampStr))
+	logFile := filepath.Join(logsDir, fmt.Sprintf("deploy-%s.log", now.Format("20060102-150405")))
 	latestLogFile := filepath.Join(logsDir, "latest-deploy.log")
 
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("=== Deployment Log [%s] ===\n", now.Format("2006-01-02 15:04:05 MST")))
-	sb.WriteString(fmt.Sprintf("Project ID : %s\n", projectID))
+	var builder strings.Builder
+	builder.WriteString(fmt.Sprintf("=== Deployment Log [%s] ===\n", now.Format("2006-01-02 15:04:05 MST")))
+	builder.WriteString(fmt.Sprintf("Project ID : %s\n", projectID))
 	if commandID != "" {
-		sb.WriteString(fmt.Sprintf("Command ID : %s\n", commandID))
+		builder.WriteString(fmt.Sprintf("Command ID : %s\n", commandID))
 	}
-	sb.WriteString("--------------------------------------------------------------------------------\n")
-	for _, l := range logs {
-		sb.WriteString(l + "\n")
+	builder.WriteString(strings.Repeat("-", 80) + "\n")
+	for _, line := range logs {
+		builder.WriteString(line + "\n")
 	}
 	if deployErr != nil {
-		sb.WriteString(fmt.Sprintf("\n[RESULT] FAILED: %v\n", deployErr))
+		builder.WriteString(fmt.Sprintf("\n[RESULT] FAILED: %v\n", deployErr))
 	} else {
-		sb.WriteString("\n[RESULT] SUCCESS: Deployment completed successfully.\n")
+		builder.WriteString("\n[RESULT] SUCCESS: Deployment completed successfully.\n")
 	}
 
-	content := []byte(sb.String())
-	_ = os.WriteFile(logFile, content, 0644)
-	_ = os.WriteFile(latestLogFile, content, 0644)
+	content := []byte(builder.String())
+	_ = os.WriteFile(logFile, content, deployedFileMode)
+	_ = os.WriteFile(latestLogFile, content, deployedFileMode)
 }

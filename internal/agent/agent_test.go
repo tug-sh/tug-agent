@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
 	"tug.sh/services/agent/internal/config"
+	"tug.sh/services/agent/internal/protocol"
 )
 
 var upgrader = websocket.Upgrader{
@@ -21,7 +23,7 @@ var upgrader = websocket.Upgrader{
 
 func TestAgentHandshake(t *testing.T) {
 	// 1. Create a dummy websocket server
-	handshakeReceived := make(chan Handshake, 1)
+	handshakeReceived := make(chan protocol.Handshake, 1)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
@@ -47,7 +49,7 @@ func TestAgentHandshake(t *testing.T) {
 			t.Fatalf("Failed to read message: %v", err)
 		}
 
-		var hs Handshake
+		var hs protocol.Handshake
 		if err := json.Unmarshal(message, &hs); err != nil {
 			t.Fatalf("Failed to unmarshal handshake: %v", err)
 		}

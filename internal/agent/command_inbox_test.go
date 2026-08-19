@@ -3,6 +3,8 @@ package agent
 import (
 	"path/filepath"
 	"testing"
+
+	"tug.sh/services/agent/internal/protocol"
 )
 
 func TestCommandInboxIdempotentReceipt(t *testing.T) {
@@ -12,7 +14,7 @@ func TestCommandInboxIdempotentReceipt(t *testing.T) {
 	if !ok || receipt.Status != "running" {
 		t.Fatalf("expected running receipt")
 	}
-	inbox.markResult(outboundCommandResult{
+	inbox.markResult(protocol.CommandResult{
 		Type:      "command_result",
 		CommandID: "cmd-1",
 		Success:   true,

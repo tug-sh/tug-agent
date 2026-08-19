@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"sync"
 
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
+
+	"tug.sh/services/agent/internal/protocol"
 )
 
 type TerminalSession struct {
@@ -22,9 +23,9 @@ type TerminalSession struct {
 	Closed    bool
 }
 
-func (r *Runtime) handleTerminalCommand(ctx context.Context, conn *websocket.Conn, cmd inboundCommand) error {
-	r.termMu.Lock()
-	defer r.termMu.Unlock()
+func (runtime *Runtime) handleTerminalCommand(ctx context.Context, conn *websocket.Conn, cmd protocol.Command) error {
+	runtime.termMu.Lock()
+	defer runtime.termMu.Unlock()
 
 	switch cmd.Type {
 	case "terminal_start":
@@ -35,8 +36,8 @@ func (r *Runtime) handleTerminalCommand(ctx context.Context, conn *websocket.Con
 		if cmd.TerminalID == "" || target == "" {
 			return fmt.Errorf("terminal_id and target_container_name/target_container_id are required")
 		}
-		
-		if _, exists := r.terminals[cmd.TerminalID]; exists {
+
+		if _, exists := runtime.terminals[cmd.TerminalID]; exists {
 			return fmt.Errorf("terminal session already exists")
 		}
 
@@ -50,8 +51,8 @@ func (r *Runtime) handleTerminalCommand(ctx context.Context, conn *websocket.Con
 		// docker exec -it negotiates TTY raw-mode itself: the docker client puts
 		// the host side into raw mode so only the container shell echoes input.
 		// Pass TERM=xterm-256color & COLORTERM=truecolor to enable rich ANSI color output.
-		c := exec.Command("docker", "exec", "-it", "-e", "TERM=xterm-256color", "-e", "COLORTERM=truecolor", target, shell)
-		ptmx, err := pty.Start(c)
+		shellCmd := exec.Command("docker", "exec", "-it", "-e", "TERM=xterm-256color", "-e", "COLORTERM=truecolor", target, shell)
+		ptmx, err := pty.Start(shellCmd)
 		if err != nil {
 			return fmt.Errorf("failed to start pty: %w", err)
 		}
@@ -64,21 +65,21 @@ func (r *Runtime) handleTerminalCommand(ctx context.Context, conn *websocket.Con
 		session := &TerminalSession{
 			ID:        cmd.TerminalID,
 			Container: target,
-			Cmd:       c,
+			Cmd:       shellCmd,
 			PTY:       ptmx,
 		}
-		r.terminals[cmd.TerminalID] = session
+		runtime.terminals[cmd.TerminalID] = session
 
 		// Read from PTY in background
 		go func() {
 			defer func() {
-				r.termMu.Lock()
-				if _, ok := r.terminals[cmd.TerminalID]; ok {
-					delete(r.terminals, cmd.TerminalID)
+				runtime.termMu.Lock()
+				if _, ok := runtime.terminals[cmd.TerminalID]; ok {
+					delete(runtime.terminals, cmd.TerminalID)
 				}
-				r.termMu.Unlock()
+				runtime.termMu.Unlock()
 				ptmx.Close()
-				c.Wait()
+				shellCmd.Wait()
 			}()
 
 			buf := make([]byte, 4096)
@@ -90,28 +91,28 @@ func (r *Runtime) handleTerminalCommand(ctx context.Context, conn *websocket.Con
 				}
 				if n > 0 {
 					payloadBase64 := base64.StdEncoding.EncodeToString(buf[:n])
-					outbound := outboundCommandResult{
+					outbound := protocol.CommandResult{
 						Type:      "terminal_output",
 						CommandID: cmd.TerminalID, // use CommandID field to route back to specific terminal
 						Success:   true,
-						Logs:      []string{payloadBase64}, // Send as base64 array element to reuse outboundCommandResult struct
+						Logs:      []string{payloadBase64}, // Send as base64 array element to reuse protocol.CommandResult struct
 					}
 					// Fire and forget
-					if writeErr := r.writeJSON(conn, outbound); writeErr != nil {
-						log.Printf("failed to send terminal output: %v", writeErr)
+					if writeErr := runtime.writeJSON(conn, outbound); writeErr != nil {
+						runtime.log.Error("failed to send terminal output: %v", writeErr)
 					}
 				}
 			}
 		}()
-		
+
 		return nil
 
 	case "terminal_input":
-		session, ok := r.terminals[cmd.TerminalID]
+		session, ok := runtime.terminals[cmd.TerminalID]
 		if !ok {
 			return fmt.Errorf("terminal session not found")
 		}
-		
+
 		payload, err := base64.StdEncoding.DecodeString(cmd.Payload)
 		if err != nil {
 			return fmt.Errorf("invalid base64 payload: %w", err)
@@ -123,7 +124,7 @@ func (r *Runtime) handleTerminalCommand(ctx context.Context, conn *websocket.Con
 		return err
 
 	case "terminal_resize":
-		session, ok := r.terminals[cmd.TerminalID]
+		session, ok := runtime.terminals[cmd.TerminalID]
 		if !ok {
 			return fmt.Errorf("terminal session not found")
 		}
@@ -140,12 +141,12 @@ func (r *Runtime) handleTerminalCommand(ctx context.Context, conn *websocket.Con
 		return nil
 
 	case "terminal_stop":
-		session, ok := r.terminals[cmd.TerminalID]
+		session, ok := runtime.terminals[cmd.TerminalID]
 		if !ok {
 			// Already gone — treat as success so the client can proceed.
 			return nil
 		}
-		delete(r.terminals, cmd.TerminalID)
+		delete(runtime.terminals, cmd.TerminalID)
 		session.close()
 		return nil
 
@@ -155,18 +156,18 @@ func (r *Runtime) handleTerminalCommand(ctx context.Context, conn *websocket.Con
 }
 
 // close terminates the underlying shell process and PTY. Safe to call multiple times.
-func (s *TerminalSession) close() {
-	s.WriteMu.Lock()
-	defer s.WriteMu.Unlock()
-	if s.Closed {
+func (session *TerminalSession) close() {
+	session.WriteMu.Lock()
+	defer session.WriteMu.Unlock()
+	if session.Closed {
 		return
 	}
-	s.Closed = true
-	if s.PTY != nil {
-		_ = s.PTY.Close()
+	session.Closed = true
+	if session.PTY != nil {
+		_ = session.PTY.Close()
 	}
-	if s.Cmd != nil && s.Cmd.Process != nil {
-		_ = s.Cmd.Process.Kill()
+	if session.Cmd != nil && session.Cmd.Process != nil {
+		_ = session.Cmd.Process.Kill()
 	}
 }
 
@@ -174,14 +175,14 @@ func (s *TerminalSession) close() {
 // agent's websocket connection ends, because each session's output loop is
 // bound to that connection — leaving them alive would orphan shell processes
 // inside containers and cause duplicated output on reconnect.
-func (r *Runtime) closeAllTerminals() {
-	r.termMu.Lock()
-	sessions := make([]*TerminalSession, 0, len(r.terminals))
-	for id, session := range r.terminals {
+func (runtime *Runtime) closeAllTerminals() {
+	runtime.termMu.Lock()
+	sessions := make([]*TerminalSession, 0, len(runtime.terminals))
+	for id, session := range runtime.terminals {
 		sessions = append(sessions, session)
-		delete(r.terminals, id)
+		delete(runtime.terminals, id)
 	}
-	r.termMu.Unlock()
+	runtime.termMu.Unlock()
 	for _, session := range sessions {
 		session.close()
 	}

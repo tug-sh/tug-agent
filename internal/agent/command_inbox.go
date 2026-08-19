@@ -7,6 +7,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"tug.sh/services/agent/internal/protocol"
+	"tug.sh/services/agent/internal/sandbox"
 )
 
 const commandInboxCap = 256
@@ -14,7 +17,7 @@ const commandInboxCap = 256
 type commandReceipt struct {
 	CommandID string                 `json:"command_id"`
 	Status    string                 `json:"status"`
-	Result    outboundCommandResult  `json:"result,omitempty"`
+	Result    protocol.CommandResult `json:"result,omitempty"`
 	UpdatedAt int64                  `json:"updated_at_unix_ms"`
 }
 
@@ -33,11 +36,11 @@ func newCommandInbox(path string) *commandInbox {
 	return inbox
 }
 
-func (c *commandInbox) load() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.ensurePath()
-	raw, err := os.ReadFile(c.path)
+func (inbox *commandInbox) load() error {
+	inbox.mu.Lock()
+	defer inbox.mu.Unlock()
+	inbox.ensurePath()
+	raw, err := os.ReadFile(inbox.path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -50,37 +53,37 @@ func (c *commandInbox) load() error {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return err
 	}
-	c.items = make(map[string]commandReceipt, len(payload.Items))
+	inbox.items = make(map[string]commandReceipt, len(payload.Items))
 	for _, item := range payload.Items {
 		if strings.TrimSpace(item.CommandID) == "" {
 			continue
 		}
-		c.items[item.CommandID] = item
+		inbox.items[item.CommandID] = item
 	}
 	return nil
 }
 
-func (c *commandInbox) get(commandID string) (commandReceipt, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	item, ok := c.items[strings.TrimSpace(commandID)]
+func (inbox *commandInbox) get(commandID string) (commandReceipt, bool) {
+	inbox.mu.Lock()
+	defer inbox.mu.Unlock()
+	item, ok := inbox.items[strings.TrimSpace(commandID)]
 	return item, ok
 }
 
-func (c *commandInbox) markRunning(commandID string) {
-	c.upsert(commandReceipt{
+func (inbox *commandInbox) markRunning(commandID string) {
+	inbox.upsert(commandReceipt{
 		CommandID: strings.TrimSpace(commandID),
 		Status:    "running",
 		UpdatedAt: time.Now().UnixMilli(),
 	})
 }
 
-func (c *commandInbox) markResult(result outboundCommandResult) {
+func (inbox *commandInbox) markResult(result protocol.CommandResult) {
 	status := "succeeded"
 	if !result.Success {
 		status = "failed"
 	}
-	c.upsert(commandReceipt{
+	inbox.upsert(commandReceipt{
 		CommandID: strings.TrimSpace(result.CommandID),
 		Status:    status,
 		Result:    result,
@@ -88,41 +91,41 @@ func (c *commandInbox) markResult(result outboundCommandResult) {
 	})
 }
 
-func (c *commandInbox) upsert(next commandReceipt) {
+func (inbox *commandInbox) upsert(next commandReceipt) {
 	if strings.TrimSpace(next.CommandID) == "" {
 		return
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.items == nil {
-		c.items = map[string]commandReceipt{}
+	inbox.mu.Lock()
+	defer inbox.mu.Unlock()
+	if inbox.items == nil {
+		inbox.items = map[string]commandReceipt{}
 	}
-	c.items[next.CommandID] = next
-	if len(c.items) > commandInboxCap {
+	inbox.items[next.CommandID] = next
+	if len(inbox.items) > commandInboxCap {
 		var oldestID string
 		var oldestAt int64
-		for id, item := range c.items {
+		for id, item := range inbox.items {
 			if oldestID == "" || item.UpdatedAt < oldestAt {
 				oldestID = id
 				oldestAt = item.UpdatedAt
 			}
 		}
-		delete(c.items, oldestID)
+		delete(inbox.items, oldestID)
 	}
-	_ = c.persistLocked()
+	_ = inbox.persistLocked()
 }
 
-func (c *commandInbox) ensurePath() {
-	if strings.TrimSpace(c.path) != "" {
+func (inbox *commandInbox) ensurePath() {
+	if strings.TrimSpace(inbox.path) != "" {
 		return
 	}
-	c.path = filepath.Join(GetDataDir(), "agent-command-inbox.json")
+	inbox.path = filepath.Join(sandbox.DataDir(), "agent-command-inbox.json")
 }
 
-func (c *commandInbox) persistLocked() error {
-	c.ensurePath()
-	items := make([]commandReceipt, 0, len(c.items))
-	for _, item := range c.items {
+func (inbox *commandInbox) persistLocked() error {
+	inbox.ensurePath()
+	items := make([]commandReceipt, 0, len(inbox.items))
+	for _, item := range inbox.items {
 		items = append(items, item)
 	}
 	payload, err := json.Marshal(struct {
@@ -131,8 +134,8 @@ func (c *commandInbox) persistLocked() error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(c.path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(inbox.path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(c.path, payload, 0o600)
+	return os.WriteFile(inbox.path, payload, 0o600)
 }

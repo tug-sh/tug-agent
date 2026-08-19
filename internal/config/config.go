@@ -17,6 +17,7 @@ type Config struct {
 	DashboardURL        string
 	AgentEnvPath        string
 	Verbose             bool
+	LogLevel            string
 	TrafficProfile      string
 	HeartbeatInterval   time.Duration
 	SelfHealInterval    time.Duration
@@ -25,12 +26,36 @@ type Config struct {
 	ReconnectJitterPct  int
 	ProtocolV2Enabled   bool
 	ProtocolV2QueuePath string
+	RouterImage         string
+	RouterNetwork       string
+	RouterHTTPPort      int
+	RouterHTTPSPort     int
+	RouterConfigPath    string
 }
+
+// Edge router defaults. They describe the reference tug-router installation and
+// can be overridden per host through the TUG_ROUTER_* variables.
+const (
+	defaultRouterImage      = "caddy:2"
+	defaultRouterHTTPPort   = 80
+	defaultRouterHTTPSPort  = 443
+	defaultRouterConfigPath = "/etc/caddy/Caddyfile"
+)
 
 const defaultAgentVersion = "1.0.7"
 const (
 	defaultTrafficProfile = "default"
 	debugTrafficProfile   = "debug"
+)
+
+// Bounds that keep a hand-edited agent.env from producing a runtime that
+// hammers the API or never backs off.
+const (
+	minHeartbeatInterval  = 5 * time.Second
+	minReconnectBaseDelay = 250 * time.Millisecond
+	maxReconnectJitterPct = 50
+	minPortNumber         = 1
+	maxPortNumber         = 65535
 )
 
 func Load() Config {
@@ -63,32 +88,33 @@ func Load() Config {
 		DashboardURL:        envOrDefault("TUG_DASHBOARD_URL", "https://app.tug.sh"),
 		AgentEnvPath:        envOrDefault("TUG_AGENT_ENV_PATH", "/etc/tug/agent.env"),
 		Verbose:             envBoolOrDefault("TUG_VERBOSE", true),
+		LogLevel:            envOrDefault("TUG_LOG_LEVEL", ""),
 		TrafficProfile:      trafficProfile,
-		HeartbeatInterval:   envDurationOrDefault("TUG_AGENT_HEARTBEAT_INTERVAL", heartbeatDefault),
-		SelfHealInterval:    envDurationOrDefault("TUG_AGENT_SELF_HEAL_INTERVAL", selfHealDefault),
-		ReconnectBaseDelay:  envDurationOrDefault("TUG_AGENT_RECONNECT_BASE_DELAY", reconnectBaseDefault),
-		ReconnectMaxDelay:   envDurationOrDefault("TUG_AGENT_RECONNECT_MAX_DELAY", reconnectMaxDefault),
-		ReconnectJitterPct:  envIntOrDefault("TUG_AGENT_RECONNECT_JITTER_PCT", reconnectJitterDefault),
+		HeartbeatInterval:   envDurationAtLeast("TUG_AGENT_HEARTBEAT_INTERVAL", heartbeatDefault, minHeartbeatInterval),
+		SelfHealInterval:    envDurationAtLeast("TUG_AGENT_SELF_HEAL_INTERVAL", selfHealDefault, minHeartbeatInterval),
+		ReconnectBaseDelay:  envDurationAtLeast("TUG_AGENT_RECONNECT_BASE_DELAY", reconnectBaseDefault, minReconnectBaseDelay),
+		ReconnectMaxDelay:   envDurationAtLeast("TUG_AGENT_RECONNECT_MAX_DELAY", reconnectMaxDefault, minReconnectBaseDelay),
+		ReconnectJitterPct:  envIntClamped("TUG_AGENT_RECONNECT_JITTER_PCT", reconnectJitterDefault, 0, maxReconnectJitterPct),
 		ProtocolV2Enabled:   envBoolOrDefault("TUG_PROTOCOL_V2_ENABLED", false),
 		ProtocolV2QueuePath: envOrDefault("TUG_PROTOCOL_V2_QUEUE_PATH", ""),
+		RouterImage:         envOrDefault("TUG_ROUTER_IMAGE", defaultRouterImage),
+		RouterNetwork:       envOrDefault("TUG_ROUTER_NETWORK", ""),
+		RouterHTTPPort:      envPortOrDefault("TUG_ROUTER_HTTP_PORT", defaultRouterHTTPPort),
+		RouterHTTPSPort:     envPortOrDefault("TUG_ROUTER_HTTPS_PORT", defaultRouterHTTPSPort),
+		RouterConfigPath:    envOrDefault("TUG_ROUTER_CONFIG_PATH", defaultRouterConfigPath),
 	}
-	if cfg.HeartbeatInterval < 5*time.Second {
-		cfg.HeartbeatInterval = 5 * time.Second
-	}
+	return withConsistentIntervals(cfg)
+}
+
+// withConsistentIntervals enforces the two rules that involve more than one
+// field: self-healing must not run more often than the heartbeat, and the
+// reconnect backoff cannot cap below its own starting delay.
+func withConsistentIntervals(cfg Config) Config {
 	if cfg.SelfHealInterval < cfg.HeartbeatInterval {
 		cfg.SelfHealInterval = cfg.HeartbeatInterval * 2
 	}
-	if cfg.ReconnectBaseDelay < 250*time.Millisecond {
-		cfg.ReconnectBaseDelay = 250 * time.Millisecond
-	}
 	if cfg.ReconnectMaxDelay < cfg.ReconnectBaseDelay {
 		cfg.ReconnectMaxDelay = cfg.ReconnectBaseDelay
-	}
-	if cfg.ReconnectJitterPct < 0 {
-		cfg.ReconnectJitterPct = 0
-	}
-	if cfg.ReconnectJitterPct > 50 {
-		cfg.ReconnectJitterPct = 50
 	}
 	return cfg
 }
@@ -135,6 +161,39 @@ func envIntOrDefault(key string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+// envDurationAtLeast reads a duration and lifts anything shorter than the
+// minimum, so a typo cannot turn a periodic loop into a busy loop.
+func envDurationAtLeast(key string, fallback time.Duration, minimum time.Duration) time.Duration {
+	value := envDurationOrDefault(key, fallback)
+	if value < minimum {
+		return minimum
+	}
+	return value
+}
+
+func envIntClamped(key string, fallback int, minimum int, maximum int) int {
+	value := envIntOrDefault(key, fallback)
+	switch {
+	case value < minimum:
+		return minimum
+	case value > maximum:
+		return maximum
+	default:
+		return value
+	}
+}
+
+// envPortOrDefault falls back instead of clamping, because a port outside the
+// valid range is a typo and binding the nearest legal port would surprise more
+// than restoring the documented default.
+func envPortOrDefault(key string, fallback int) int {
+	value := envIntOrDefault(key, fallback)
+	if value < minPortNumber || value > maxPortNumber {
+		return fallback
+	}
+	return value
 }
 
 func normalizeTrafficProfile(value string) string {

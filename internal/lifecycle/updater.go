@@ -1,4 +1,6 @@
-package agent
+// Package lifecycle manages the agent's own installation on the host: self
+// update of the binary and detached uninstall.
+package lifecycle
 
 import (
 	"context"
@@ -18,6 +20,9 @@ func NewUpdater() *Updater {
 
 type ProgressFunc func(downloaded uint64, total uint64, percent int)
 
+// progressReportInterval throttles download progress frames sent to the API.
+const progressReportInterval = 250 * time.Millisecond
+
 type progressReader struct {
 	reader     io.Reader
 	total      uint64
@@ -27,28 +32,32 @@ type progressReader struct {
 	onProgress ProgressFunc
 }
 
-func (pr *progressReader) Read(p []byte) (int, error) {
-	n, err := pr.reader.Read(p)
-	if n > 0 {
-		pr.downloaded += uint64(n)
-		if pr.total > 0 && pr.onProgress != nil {
-			pct := int((pr.downloaded * 100) / pr.total)
-			now := time.Now()
-			if pct != pr.lastPct || now.Sub(pr.lastReport) > 250*time.Millisecond {
-				pr.lastPct = pct
-				pr.lastReport = now
-				pr.onProgress(pr.downloaded, pr.total, pct)
-			}
-		}
+func (progress *progressReader) Read(buffer []byte) (int, error) {
+	bytesRead, err := progress.reader.Read(buffer)
+	if bytesRead == 0 {
+		return bytesRead, err
 	}
-	return n, err
+	progress.downloaded += uint64(bytesRead)
+	if progress.total == 0 || progress.onProgress == nil {
+		return bytesRead, err
+	}
+
+	percent := int((progress.downloaded * 100) / progress.total)
+	now := time.Now()
+	if percent == progress.lastPct && now.Sub(progress.lastReport) <= progressReportInterval {
+		return bytesRead, err
+	}
+	progress.lastPct = percent
+	progress.lastReport = now
+	progress.onProgress(progress.downloaded, progress.total, percent)
+	return bytesRead, err
 }
 
-func (u *Updater) SafeUpdate(ctx context.Context, binaryURL string) error {
-	return u.SafeUpdateWithProgress(ctx, binaryURL, nil)
+func (updater *Updater) SafeUpdate(ctx context.Context, binaryURL string) error {
+	return updater.SafeUpdateWithProgress(ctx, binaryURL, nil)
 }
 
-func (u *Updater) SafeUpdateWithProgress(ctx context.Context, binaryURL string, onProgress ProgressFunc) error {
+func (updater *Updater) SafeUpdateWithProgress(ctx context.Context, binaryURL string, onProgress ProgressFunc) error {
 	downloadCtx, cancelDownload := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancelDownload()
 

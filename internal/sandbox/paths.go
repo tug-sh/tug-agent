@@ -1,4 +1,6 @@
-package agent
+// Package sandbox owns the agent's data directory and confines every file
+// operation to the managed apps tree.
+package sandbox
 
 import (
 	"errors"
@@ -8,13 +10,11 @@ import (
 	"strings"
 )
 
-var sandboxRoot string
+var root = filepath.Join(DataDir(), "apps")
 
-func init() {
-	sandboxRoot = filepath.Join(GetDataDir(), "apps")
-}
-
-func GetDataDir() string {
+// DataDir returns the base directory for agent state, honouring TUG_DATA_DIR
+// and falling back to a home directory path in development.
+func DataDir() string {
 	if env := os.Getenv("TUG_DATA_DIR"); env != "" {
 		return env
 	}
@@ -27,7 +27,9 @@ func GetDataDir() string {
 	return "/var/lib/tug"
 }
 
-func ResolveSandboxPath(relativePath string) (string, error) {
+// ResolvePath maps a dashboard supplied path onto the sandbox root and rejects
+// any attempt to escape it via "..".
+func ResolvePath(relativePath string) (string, error) {
 	cleanInput := filepath.Clean(relativePath)
 	if cleanInput == string(filepath.Separator) || cleanInput == "." {
 		cleanInput = "."
@@ -35,13 +37,13 @@ func ResolveSandboxPath(relativePath string) (string, error) {
 		// Treat absolute-style UI paths like "/foo/bar" as sandbox-relative.
 		cleanInput = strings.TrimPrefix(cleanInput, string(filepath.Separator))
 	}
-	target := filepath.Join(sandboxRoot, cleanInput)
+	target := filepath.Join(root, cleanInput)
 
-	rel, err := filepath.Rel(sandboxRoot, target)
+	relative, err := filepath.Rel(root, target)
 	if err != nil {
 		return "", fmt.Errorf("sandbox resolution failed: %w", err)
 	}
-	if rel == ".." || strings.HasPrefix(rel, "../") {
+	if relative == ".." || strings.HasPrefix(relative, "../") {
 		return "", errors.New("sandbox violation detected")
 	}
 
