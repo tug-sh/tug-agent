@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"tug.sh/pkg/protocol"
+	"tug.sh/services/agent/internal/docker"
 	"tug.sh/services/agent/internal/sandbox"
 )
 
@@ -197,4 +198,35 @@ func (runtime *Runtime) handleContainerInspect(request commandRequest) ([]string
 		*request.payload = raw
 	}
 	return []string{"Inspected container " + containerID}, nil
+}
+
+func (runtime *Runtime) handlePrepareMigrationTarget(request commandRequest) ([]string, error) {
+	if err := docker.PrepareMigrationTargetKey(request.ctx, request.command.EphemeralKey); err != nil {
+		return nil, err
+	}
+	return []string{"Prepared target VPS migration SSH key successfully."}, nil
+}
+
+func (runtime *Runtime) handleMigrateContainerSource(request commandRequest) ([]string, error) {
+	containerID, err := request.requireContainerID()
+	if err != nil {
+		return nil, err
+	}
+	migCtx, cancel := request.withTimeout(5 * time.Minute)
+	defer cancel()
+
+	err = runtime.dockerManager.MigrateContainerToTarget(
+		migCtx,
+		containerID,
+		request.command.TargetIP,
+		request.command.TargetSSHPort,
+		request.command.EphemeralKey,
+		request.command.MoveMode,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	_ = runtime.sendSnapshot()
+	return []string{fmt.Sprintf("Migrated container %s to target %s successfully.", containerID, request.command.TargetIP)}, nil
 }
