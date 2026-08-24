@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/shirou/gopsutil/v4/host"
 
 	"tug.sh/pkg/protocol"
 	"tug.sh/services/agent/internal/sandbox"
@@ -85,7 +86,7 @@ func (runtime *Runtime) buildSnapshot() (protocol.Handshake, error) {
 	return protocol.Handshake{
 		HostName:       hostName,
 		AgentVersion:   runtime.config.AgentVersion,
-		OS:             goruntime.GOOS,
+		OS:             getOSDisplayString(),
 		Arch:           goruntime.GOARCH,
 		CPUCores:       goruntime.NumCPU(),
 		RAMBytes:       totalRAMBytes,
@@ -162,4 +163,20 @@ func fetchPublicIP() (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(body)), nil
+}
+
+func getOSDisplayString() string {
+	info, err := host.Info()
+	if err == nil && info.Platform != "" {
+		version := info.PlatformVersion
+		platform := info.Platform
+		if len(platform) > 0 {
+			platform = strings.ToUpper(platform[:1]) + platform[1:]
+		}
+		if version != "" {
+			return platform + " " + version
+		}
+		return platform
+	}
+	return goruntime.GOOS
 }
