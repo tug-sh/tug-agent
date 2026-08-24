@@ -18,8 +18,8 @@ const (
 	// A session that survives this long is treated as healthy, which resets
 	// the reconnect backoff.
 	stableSessionThreshold = 20 * time.Second
-	websocketPingPeriod    = 20 * time.Second
-	defaultHeartbeatPeriod = 30 * time.Second
+	websocketPingPeriod    = 15 * time.Second
+	defaultHeartbeatPeriod = 15 * time.Second
 	defaultSelfHealPeriod  = 15 * time.Minute
 	containerRefreshPeriod = 30 * time.Second
 	writeTimeout           = 10 * time.Second

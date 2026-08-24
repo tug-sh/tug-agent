@@ -79,7 +79,7 @@ func Load() Config {
 	if debugProfileEnabled {
 		trafficProfile = debugTrafficProfile
 	}
-	heartbeatDefault := 30 * time.Second
+	heartbeatDefault := 15 * time.Second
 	selfHealDefault := 15 * time.Minute
 	if trafficProfile == debugTrafficProfile {
 		heartbeatDefault = 15 * time.Second
