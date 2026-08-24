@@ -24,7 +24,7 @@ func DiskStats(path string) (freeBytes uint64, totalBytes uint64, err error) {
 }
 
 func CPUUsagePercent() (float64, error) {
-	percentages, err := cpu.Percent(100*time.Millisecond, false)
+	percentages, err := cpu.Percent(0, false)
 	if err != nil || len(percentages) == 0 {
 		return 0, err
 	}
