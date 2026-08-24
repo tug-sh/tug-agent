@@ -4,7 +4,6 @@ package system
 import (
 	"fmt"
 	"syscall"
-	"time"
 
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/mem"

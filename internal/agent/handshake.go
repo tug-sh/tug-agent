@@ -166,6 +166,20 @@ func fetchPublicIP() (string, error) {
 }
 
 func getOSDisplayString() string {
+	if goruntime.GOOS == "linux" {
+		if content, err := os.ReadFile("/etc/os-release"); err == nil {
+			for _, line := range strings.Split(string(content), "\n") {
+				if strings.HasPrefix(line, "PRETTY_NAME=") {
+					val := strings.TrimPrefix(line, "PRETTY_NAME=")
+					val = strings.Trim(val, `"'`)
+					if val != "" {
+						return val
+					}
+				}
+			}
+		}
+	}
+
 	info, err := host.Info()
 	if err == nil && info.Platform != "" {
 		version := info.PlatformVersion

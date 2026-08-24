@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -82,7 +83,9 @@ func (updater *Updater) SafeUpdateWithProgress(ctx context.Context, binaryURL st
 	}
 
 	currentBinary, err := os.Executable()
-	if err != nil {
+	if err == nil {
+		currentBinary = strings.TrimSpace(strings.TrimSuffix(currentBinary, " (deleted)"))
+	} else {
 		currentBinary = "/usr/local/bin/tug-agent"
 	}
 	nextBinary := currentBinary + ".next"
