@@ -141,7 +141,8 @@ func cliCommands() map[string]cliCommand {
 		},
 		"restart": {run: func(cfg config.Config, _ []string) error { return runRestart(cfg) }},
 		"logs": {run: func(_ config.Config, args []string) error {
-			return runLogs(parseLogsLimit(args))
+			follow, limit := parseLogsArgs(args)
+			return runLogs(follow, limit)
 		}},
 		"disconnect": {
 			run:     func(cfg config.Config, _ []string) error { return runDisconnect(cfg) },
@@ -333,17 +334,31 @@ func agentLogPath() string {
 	return filepath.Join(sandbox.DataDir(), "logs", "agent.log")
 }
 
-func parseLogsLimit(args []string) int {
+func parseLogsArgs(args []string) (bool, int) {
+	follow := false
+	limit := -1
+
 	for i := 0; i < len(args); i++ {
 		arg := strings.TrimSpace(args[i])
 		if arg == "" || arg == "logs" {
 			continue
 		}
+		if arg == "-f" || arg == "--follow" {
+			follow = true
+			continue
+		}
 		if n, err := strconv.Atoi(arg); err == nil {
-			return clampLogLimit(n)
+			limit = n
 		}
 	}
-	return defaultAgentLogLines
+	
+	if limit == -1 {
+		limit = defaultAgentLogLines
+	} else {
+		limit = clampLogLimit(limit)
+	}
+
+	return follow, limit
 }
 
 func clampLogLimit(n int) int {
@@ -400,8 +415,40 @@ func tailFileLines(path string, limit int) ([]string, error) {
 	return lines, nil
 }
 
-func runLogs(limit int) error {
+func printColorizedLog(line string) {
+	if strings.Contains(line, "[error]") {
+		fmt.Println("\033[31m" + line + "\033[0m")
+	} else if strings.Contains(line, "[warn]") {
+		fmt.Println("\033[33m" + line + "\033[0m")
+	} else if strings.Contains(line, "[debug]") {
+		fmt.Println("\033[36m" + line + "\033[0m")
+	} else if strings.Contains(line, "[info]") {
+		fmt.Println(strings.Replace(line, "[info]", "\033[32m[info]\033[0m", 1))
+	} else {
+		fmt.Println(line)
+	}
+}
+
+func runLogs(follow bool, limit int) error {
 	path := agentLogPath()
+
+	if follow {
+		cmd := exec.Command("tail", "-n", strconv.Itoa(limit), "-f", path)
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return err
+		}
+		cmd.Stderr = os.Stderr
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			printColorizedLog(scanner.Text())
+		}
+		return cmd.Wait()
+	}
+
 	lines, err := tailFileLines(path, limit)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -414,7 +461,7 @@ func runLogs(limit int) error {
 		return nil
 	}
 	for _, line := range lines {
-		fmt.Println(line)
+		printColorizedLog(line)
 	}
 	return nil
 }
@@ -592,7 +639,7 @@ func printHelp(version string) {
 	fmt.Println("  \033[1;37mstatus\033[0m      Show agent connection status and service health")
 	fmt.Println("  \033[1;37mstop\033[0m        Stop agent background service (`systemctl stop tug-agent`)")
 	fmt.Println("  \033[1;37mrestart\033[0m     Restart agent background service (`systemctl restart tug-agent`)")
-	fmt.Println("  \033[1;37mlogs\033[0m        Show last 100 agent log lines (`tug logs [n]`)")
+	fmt.Println("  \033[1;37mlogs\033[0m        Show last 100 agent log lines (`tug logs [-f] [n]`)")
 	fmt.Println("  \033[1;37mupdate\033[0m      Update agent binary to the latest release")
 	fmt.Println("  \033[1;37mdisconnect\033[0m  Disconnect agent from dashboard and reset token")
 	fmt.Println("  \033[1;37mremove\033[0m      Uninstall agent and remove systemd service")
