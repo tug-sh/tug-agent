@@ -107,54 +107,55 @@ func (manager *Manager) MigrateContainerToTarget(
 		_, _ = combined(ctx, "rmi", tempImageTag)
 	}()
 
-	// 4. Save image to tar archive
-	archivePath := fmt.Sprintf("/tmp/tug_mig_%s.tar", containerID)
-	defer os.Remove(archivePath)
-
-	if _, err := combined(ctx, "save", "-o", archivePath, tempImageTag); err != nil {
-		return fmt.Errorf("failed to save container archive: %w", err)
-	}
-
-	// 5. Write ephemeral private key to temp file
+	// 4. Write ephemeral private key to temp file
 	keyPath := fmt.Sprintf("/tmp/tug_mig_key_%s", containerID)
 	if err := os.WriteFile(keyPath, []byte(ephemeralPrivateKey+"\n"), 0600); err != nil {
 		return fmt.Errorf("failed to write ephemeral private key: %w", err)
 	}
 	defer os.Remove(keyPath)
 
-	// 6. SCP transfer archive to target VPS
-	scpArgs := []string{
-		"-P", fmt.Sprintf("%d", targetSSHPort),
-		"-i", keyPath,
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
-		archivePath,
-		fmt.Sprintf("root@%s:%s", targetIP, archivePath),
-	}
-	cmdSCP := exec.CommandContext(ctx, "scp", scpArgs...)
-	if out, err := cmdSCP.CombinedOutput(); err != nil {
-		return fmt.Errorf("scp transfer failed: %s: %w", string(out), err)
-	}
-
-	// 7. SSH into target VPS to load image and start container
-	remoteCmd := fmt.Sprintf(
-		"docker load -i %s && docker run -d --name %s %s && rm -f %s",
-		archivePath,
-		containerName,
-		tempImageTag,
-		archivePath,
-	)
+	// 5. Stream image to target VPS and run it
 	sshArgs := []string{
 		"-p", fmt.Sprintf("%d", targetSSHPort),
 		"-i", keyPath,
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
 		fmt.Sprintf("root@%s", targetIP),
-		remoteCmd,
+		fmt.Sprintf("docker load && docker run -d --name %s %s", containerName, tempImageTag),
 	}
+	
 	cmdSSH := exec.CommandContext(ctx, "ssh", sshArgs...)
-	if out, err := cmdSSH.CombinedOutput(); err != nil {
-		return fmt.Errorf("ssh restore on target failed: %s: %w", string(out), err)
+	cmdSave := exec.CommandContext(ctx, "docker", "save", tempImageTag)
+	
+	// Pipe docker save directly to ssh
+	pipeReader, pipeWriter, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("failed to create pipe: %w", err)
+	}
+	cmdSave.Stdout = pipeWriter
+	cmdSSH.Stdin = pipeReader
+	
+	// We only need CombinedOutput from ssh to see if load/run failed
+	if err := cmdSave.Start(); err != nil {
+		pipeReader.Close()
+		pipeWriter.Close()
+		return fmt.Errorf("failed to start docker save: %w", err)
+	}
+	
+	if err := cmdSSH.Start(); err != nil {
+		pipeReader.Close()
+		pipeWriter.Close()
+		return fmt.Errorf("failed to start ssh transfer: %w", err)
+	}
+	
+	// Wait for save to finish, then close writer so ssh knows EOF
+	go func() {
+		_ = cmdSave.Wait()
+		pipeWriter.Close()
+	}()
+	
+	if err := cmdSSH.Wait(); err != nil {
+		return fmt.Errorf("ssh restore on target failed: %w", err)
 	}
 
 	// 8. If move mode, remove source container
