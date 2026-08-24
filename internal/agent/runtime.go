@@ -110,6 +110,14 @@ func (runtime *Runtime) Run(ctx context.Context) error {
 		connected, err := runtime.connectAndServe(ctx)
 		if err != nil {
 			runtime.log.Warn("connection closed: %v", err)
+			if isDuplicateConnection(err) {
+				runtime.log.Warn("another agent holds this server_id; cooling down for %s before retrying (fix the duplicate: run `tug init` on only one machine)", authCooldown)
+				if !sleepUntil(ctx, authCooldown) {
+					return nil
+				}
+				consecutiveFailures = 0
+				continue
+			}
 			if isNonRetriable(err) {
 				runtime.logReconnectRecoveryHint(err)
 				runtime.log.Warn("auth/config error; cooling down for %s before retrying...", authCooldown)

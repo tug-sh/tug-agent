@@ -53,3 +53,30 @@ func isPendingAuthError(err error) bool {
 	var target pendingAuthError
 	return errors.As(err, &target)
 }
+
+// duplicateConnectionError marks the case where the API rejected this agent
+// because another connection is already live on the same server_id. Retrying
+// immediately would only re-enter the eviction loop, so the agent cools down.
+type duplicateConnectionError struct {
+	cause error
+}
+
+func (failure duplicateConnectionError) Error() string {
+	return failure.cause.Error()
+}
+
+func (failure duplicateConnectionError) Unwrap() error {
+	return failure.cause
+}
+
+func markDuplicateConnection(cause error) error {
+	if cause == nil {
+		return nil
+	}
+	return duplicateConnectionError{cause: cause}
+}
+
+func isDuplicateConnection(err error) bool {
+	var target duplicateConnectionError
+	return errors.As(err, &target)
+}

@@ -55,7 +55,7 @@ func (runtime *Runtime) connectAndServe(ctx context.Context) (bool, error) {
 	runtime.startSessionWorkers(sessionCtx, conn)
 
 	readErr := runtime.readServerFrames(ctx, conn)
-	if isPendingAuthError(readErr) || isNonRetriable(readErr) {
+	if isPendingAuthError(readErr) || isNonRetriable(readErr) || isDuplicateConnection(readErr) {
 		return false, readErr
 	}
 	return runtime.wasSessionStable(sessionStartedAt), readErr
@@ -137,6 +137,10 @@ func (runtime *Runtime) readServerFrames(ctx context.Context, conn *websocket.Co
 	for {
 		_, message, readErr := conn.ReadMessage()
 		if readErr != nil {
+			runtime.logDisconnectCause(readErr)
+			if isDuplicateServerClose(readErr) {
+				return markDuplicateConnection(readErr)
+			}
 			return readErr
 		}
 		handled, controlErr := runtime.handleControlFrame(message)
@@ -158,6 +162,45 @@ func (runtime *Runtime) readServerFrames(ctx context.Context, conn *websocket.Co
 		runtime.log.Debug("received command: type=%s command_id=%s", command.Type, command.CommandID)
 		go runtime.runCommand(ctx, conn, command)
 	}
+}
+
+// isDuplicateServerClose reports whether the API closed this connection because
+// another agent is already live on the same server_id.
+func isDuplicateServerClose(err error) bool {
+	var closeErr *websocket.CloseError
+	return errors.As(err, &closeErr) && strings.Contains(closeErr.Text, protocol.CloseReasonDuplicateServer)
+}
+
+// logDisconnectCause explains why the session ended in terms the operator can
+// act on. A bare "1006 unexpected EOF" hides whether the API deliberately
+// closed the socket (for example because the same token is live on another
+// machine) or the network dropped it.
+func (runtime *Runtime) logDisconnectCause(err error) {
+	var closeErr *websocket.CloseError
+	if errors.As(err, &closeErr) {
+		switch {
+		case strings.Contains(closeErr.Text, protocol.CloseReasonDuplicateServer):
+			runtime.log.Warn(
+				"the API rejected this connection: another agent is already live on this server_id. "+
+					"Check for a cloned VPS, a copied agent.env, or a second tug agent process (close %d).",
+				closeErr.Code,
+			)
+		case strings.Contains(closeErr.Text, protocol.CloseReasonReplaced):
+			runtime.log.Warn(
+				"the API replaced this connection with a newer one for the same server_id; "+
+					"reconnecting. A persistent loop here means the token is live elsewhere (close %d).",
+				closeErr.Code,
+			)
+		default:
+			runtime.log.Warn("server closed the connection: %s (close %d)", closeErr.Text, closeErr.Code)
+		}
+		return
+	}
+	if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
+		runtime.log.Warn("connection dropped without a close frame (network or proxy): %v", err)
+		return
+	}
+	runtime.log.Debug("read loop ended: %v", err)
 }
 
 // handleControlFrame processes transport level frames. It reports whether the
