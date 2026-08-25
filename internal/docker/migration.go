@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -124,8 +123,8 @@ func (manager *Manager) MigrateContainerToTarget(
 		fmt.Sprintf("docker load && docker run -d --name %s %s", containerName, tempImageTag),
 	}
 	
-	cmdSSH := exec.CommandContext(ctx, "ssh", sshArgs...)
-	cmdSave := exec.CommandContext(ctx, "docker", "save", tempImageTag)
+	cmdSSH := execCommandContext(ctx, "ssh", sshArgs...)
+	cmdSave := execCommandContext(ctx, "docker", "save", tempImageTag)
 	
 	// Pipe docker save directly to ssh
 	pipeReader, pipeWriter, err := os.Pipe()

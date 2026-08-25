@@ -21,17 +21,20 @@ func NewManager() *Manager {
 	return &Manager{}
 }
 
+// execCommandContext is a variable to allow mocking in tests
+var execCommandContext = exec.CommandContext
+
 // combined runs a docker subcommand and returns stdout together with stderr,
 // because failures are surfaced to the user as the command output.
 func combined(ctx context.Context, args ...string) (string, error) {
-	output, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+	output, err := execCommandContext(ctx, "docker", args...).CombinedOutput()
 	return string(output), err
 }
 
 // output runs a docker subcommand and returns stdout only, for commands whose
 // result is parsed rather than displayed.
 func output(ctx context.Context, args ...string) (string, error) {
-	stdout, err := exec.CommandContext(ctx, "docker", args...).Output()
+	stdout, err := execCommandContext(ctx, "docker", args...).Output()
 	if err != nil {
 		return "", err
 	}
