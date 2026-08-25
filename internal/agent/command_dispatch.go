@@ -37,6 +37,11 @@ func (runtime *Runtime) runCommand(ctx context.Context, conn *websocket.Conn, co
 	}
 	if execErr != nil {
 		runtime.log.Error("command %s (id=%s) failed: %v", command.Type, command.CommandID, execErr)
+	} else {
+		switch command.Type {
+		case protocol.CmdDeploy, protocol.CmdGitDeploy, protocol.CmdContainerAction:
+			runtime.publishAllContainerStatuses(ctx, conn)
+		}
 	}
 }
 
