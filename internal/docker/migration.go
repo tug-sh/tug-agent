@@ -4,11 +4,40 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
+
+// CheckMigrationReachable confirms, from the source machine, that the target's
+// SSH port can be opened. It is the preflight for a direct migration: if the
+// source cannot reach the target here (target behind NAT, firewalled, or wrong
+// address), the migration is refused up front instead of failing part-way with
+// a broken pipe.
+func CheckMigrationReachable(ctx context.Context, targetIP string, targetSSHPort int) ([]string, error) {
+	targetIP = strings.TrimSpace(targetIP)
+	if targetIP == "" {
+		return nil, fmt.Errorf("target_ip is required")
+	}
+	if targetSSHPort <= 0 {
+		targetSSHPort = 22
+	}
+	addr := net.JoinHostPort(targetIP, strconv.Itoa(targetSSHPort))
+
+	dialer := net.Dialer{Timeout: 15 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"target %s is not reachable from this server: %w. Direct migration needs a routable path to the target's SSH port; a target behind NAT or a firewall cannot be migrated to this way",
+			addr, err,
+		)
+	}
+	_ = conn.Close()
+	return []string{fmt.Sprintf("Target %s is reachable over SSH.", addr)}, nil
+}
 
 // PrepareMigrationTargetKey adds the ephemeral public key to authorized_keys on target VPS
 func PrepareMigrationTargetKey(ctx context.Context, ephemeralPublicKey string) error {
@@ -189,11 +218,20 @@ func (manager *Manager) MigrateContainerToTarget(
 	pipeReader.Close()
 	saveWaitErr := <-saveDone
 
+	// ssh is checked first on purpose. When the remote side is unreachable or
+	// refuses the command, ssh dies early and closes the pipe, and docker save
+	// then reports a "broken pipe" that is only a symptom. Surfacing the save
+	// error first is what hid the real reason (a bad target host, a refused
+	// connection, no docker on the far end) behind "broken pipe".
+	if sshErr != nil {
+		detail := strings.TrimSpace(sshOut.String())
+		if detail == "" {
+			detail = fmt.Sprintf("could not reach root@%s:%d over SSH", targetIP, targetSSHPort)
+		}
+		return fmt.Errorf("ssh restore on target failed: %w\n%s", sshErr, detail)
+	}
 	if saveWaitErr != nil {
 		return fmt.Errorf("docker save failed: %w\n%s", saveWaitErr, strings.TrimSpace(saveErr.String()))
-	}
-	if sshErr != nil {
-		return fmt.Errorf("ssh restore on target failed: %w\n%s", sshErr, strings.TrimSpace(sshOut.String()))
 	}
 	if out := strings.TrimSpace(sshOut.String()); out != "" {
 		note("%s", out)

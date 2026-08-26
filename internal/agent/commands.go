@@ -99,6 +99,7 @@ var commandHandlers = map[string]commandHandler{
 	protocol.CmdContainerAction:        (*Runtime).handleContainerAction,
 	protocol.CmdMigrateContainerSource: (*Runtime).handleMigrateContainerSource,
 	protocol.CmdPrepareMigrationTarget: (*Runtime).handlePrepareMigrationTarget,
+	protocol.CmdMigrationPreflight:     (*Runtime).handleMigrationPreflight,
 	protocol.CmdServerAction:           (*Runtime).handleServerAction,
 	protocol.CmdNetworkCreate:        (*Runtime).handleNetworkCreate,
 	protocol.CmdNetworkDelete:        (*Runtime).handleNetworkDelete,

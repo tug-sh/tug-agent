@@ -15,13 +15,14 @@ import (
 )
 
 const (
-	containerActionTimeout = 60 * time.Second
-	networkActionTimeout   = 30 * time.Second
-	deployTimeout          = 2 * time.Minute
-	snapshotPullTimeout    = 20 * time.Second
-	serverResetTimeout     = 15 * time.Second
-	defaultLogsTailLines   = 200
-	maxLogsTailLines       = 2000
+	containerActionTimeout    = 60 * time.Second
+	networkActionTimeout      = 30 * time.Second
+	deployTimeout             = 2 * time.Minute
+	snapshotPullTimeout       = 20 * time.Second
+	serverResetTimeout        = 15 * time.Second
+	migrationPreflightTimeout = 20 * time.Second
+	defaultLogsTailLines      = 200
+	maxLogsTailLines          = 2000
 )
 
 func (runtime *Runtime) handleDockerDiskUsage(request commandRequest) ([]string, error) {
@@ -205,6 +206,16 @@ func (runtime *Runtime) handlePrepareMigrationTarget(request commandRequest) ([]
 		return nil, err
 	}
 	return []string{"Prepared target VPS migration SSH key successfully."}, nil
+}
+
+// handleMigrationPreflight answers, from the source machine, whether the target
+// can actually be reached before any state-changing work begins. Direct
+// migration needs a routable path to the target's SSH port; a target behind NAT
+// with no reachable address fails here rather than half-way through the transfer.
+func (runtime *Runtime) handleMigrationPreflight(request commandRequest) ([]string, error) {
+	migCtx, cancel := request.withTimeout(migrationPreflightTimeout)
+	defer cancel()
+	return docker.CheckMigrationReachable(migCtx, request.command.TargetIP, request.command.TargetSSHPort)
 }
 
 func (runtime *Runtime) handleMigrateContainerSource(request commandRequest) ([]string, error) {
