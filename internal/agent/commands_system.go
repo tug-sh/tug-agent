@@ -59,11 +59,15 @@ func (runtime *Runtime) handleSelfUpdate(request commandRequest) ([]string, erro
 			Percent:         percent,
 		})
 	}
-	if err := runtime.updater.SafeUpdateWithProgress(request.ctx, request.command.BinaryURL, reportProgress); err != nil {
+	if err := runtime.updater.SafeUpdateWithProgress(request.ctx, request.command.BinaryURL, request.command.Version, reportProgress); err != nil {
 		return nil, err
 	}
 	go runtime.restartServiceAfterUpdate()
-	return []string{"Agent binary updated successfully. Service restarting..."}, nil
+	target := strings.TrimSpace(request.command.Version)
+	if target == "" {
+		target = "latest"
+	}
+	return []string{"Agent binary updated to v" + target + " successfully. Service restarting..."}, nil
 }
 
 // restartServiceAfterUpdate hands the process over to systemd once the new

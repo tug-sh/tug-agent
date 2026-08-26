@@ -55,10 +55,15 @@ func (progress *progressReader) Read(buffer []byte) (int, error) {
 }
 
 func (updater *Updater) SafeUpdate(ctx context.Context, binaryURL string) error {
-	return updater.SafeUpdateWithProgress(ctx, binaryURL, nil)
+	return updater.SafeUpdateWithProgress(ctx, binaryURL, "", nil)
 }
 
-func (updater *Updater) SafeUpdateWithProgress(ctx context.Context, binaryURL string, onProgress ProgressFunc) error {
+// SafeUpdateWithProgress downloads, health-tests, and swaps in the new binary.
+// expectedVersion, when set, is the version the caller asked for: the downloaded
+// binary is asked to report its own version and the swap is refused on a
+// mismatch. This is what turns "the release host is still serving the old build"
+// from a silent no-op that restarts into the same version into a clear failure.
+func (updater *Updater) SafeUpdateWithProgress(ctx context.Context, binaryURL string, expectedVersion string, onProgress ProgressFunc) error {
 	downloadCtx, cancelDownload := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancelDownload()
 
@@ -128,9 +133,52 @@ func (updater *Updater) SafeUpdateWithProgress(ctx context.Context, binaryURL st
 		return fmt.Errorf("new binary failed health test: %w", err)
 	}
 
+	// Refuse the swap when the downloaded binary is not the version that was
+	// asked for. Without this the agent would restart into the very same build
+	// the release host handed back, and the task would still close as a success.
+	if expected := normalizeReportedVersion(expectedVersion); expected != "" {
+		got, err := binaryVersion(ctx, nextBinary)
+		if err != nil {
+			_ = os.Remove(nextBinary)
+			return fmt.Errorf("could not read the downloaded binary's version: %w", err)
+		}
+		if got != expected {
+			_ = os.Remove(nextBinary)
+			return fmt.Errorf(
+				"the release host served agent v%s, not the requested v%s. The requested release is probably not published yet",
+				got, expected,
+			)
+		}
+	}
+
 	if err := os.Rename(nextBinary, currentBinary); err != nil {
 		return fmt.Errorf("failed to replace agent binary: %w", err)
 	}
 
 	return nil
+}
+
+// binaryVersion asks a built agent binary to print its version. The command
+// prints "tug-agent v<version>"; only the number is returned.
+func binaryVersion(ctx context.Context, path string) (string, error) {
+	versionCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(versionCtx, path, "version").Output()
+	if err != nil {
+		return "", err
+	}
+	fields := strings.Fields(strings.TrimSpace(string(out)))
+	if len(fields) == 0 {
+		return "", fmt.Errorf("empty version output")
+	}
+	return normalizeReportedVersion(fields[len(fields)-1]), nil
+}
+
+func normalizeReportedVersion(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.TrimPrefix(value, "v")
+	if strings.EqualFold(value, "latest") {
+		return ""
+	}
+	return value
 }

@@ -59,6 +59,96 @@ func CheckMigrationReachable(ctx context.Context, targetIP string, targetSSHPort
 	return []string{fmt.Sprintf("Target %s is reachable over SSH.", addr)}, nil
 }
 
+// CheckMigrationConnectivity goes beyond an open port: it opens a real SSH
+// session to sshUser@target with the ephemeral key and runs a trivial remote
+// command. This is what a bare TCP dial cannot see — whether sshd will actually
+// accept the key. It classifies the three ways a reachable target still cannot
+// be migrated to, so the dashboard can say why up front instead of failing
+// mid-transfer:
+//   - the port is open but the key is refused (PermitRootLogin no,
+//     PubkeyAuthentication off, wrong/locked account, bad authorized_keys perms),
+//   - the login works but docker is missing on the far end,
+//   - the address is not routable at all.
+//
+// BatchMode and NumberOfPasswordPrompts=0 keep a refused key from hanging on a
+// password prompt: it fails immediately with the sshd reason instead.
+func CheckMigrationConnectivity(ctx context.Context, targetIP string, targetSSHPort int, sshUser, ephemeralPrivateKey string) ([]string, error) {
+	targetIP = strings.TrimSpace(targetIP)
+	sshUser = strings.TrimSpace(sshUser)
+	ephemeralPrivateKey = strings.TrimSpace(ephemeralPrivateKey)
+	if targetIP == "" {
+		return nil, fmt.Errorf("target_ip is required")
+	}
+	if targetSSHPort <= 0 {
+		targetSSHPort = 22
+	}
+	if sshUser == "" {
+		sshUser = "root"
+	}
+
+	// Without a key there is nothing to authenticate with; fall back to the
+	// reachability probe so the caller still gets a routing answer.
+	if ephemeralPrivateKey == "" {
+		return CheckMigrationReachable(ctx, targetIP, targetSSHPort)
+	}
+
+	// A closed/unroutable port is a routing problem, not an auth one; surface it
+	// as such before attempting the login.
+	if _, err := CheckMigrationReachable(ctx, targetIP, targetSSHPort); err != nil {
+		return nil, err
+	}
+
+	keyPath := filepath.Join(os.TempDir(), fmt.Sprintf("tug_mig_probe_%d", time.Now().UnixNano()))
+	if err := os.WriteFile(keyPath, []byte(ephemeralPrivateKey+"\n"), 0600); err != nil {
+		return nil, fmt.Errorf("failed to write probe key: %w", err)
+	}
+	defer os.Remove(keyPath)
+
+	const okMarker = "TUG_MIG_OK"
+	const noDockerMarker = "TUG_MIG_NODOCKER"
+	remote := "if command -v docker >/dev/null 2>&1; then echo " + okMarker + "; else echo " + noDockerMarker + "; fi"
+
+	args := []string{
+		"-p", strconv.Itoa(targetSSHPort),
+		"-i", keyPath,
+		"-o", "BatchMode=yes",
+		"-o", "NumberOfPasswordPrompts=0",
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "ConnectTimeout=10",
+		fmt.Sprintf("%s@%s", sshUser, targetIP),
+		remote,
+	}
+
+	var out bytes.Buffer
+	cmd := execCommandContext(ctx, "ssh", args...)
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	runErr := cmd.Run()
+	combined := strings.TrimSpace(out.String())
+
+	if runErr == nil && strings.Contains(combined, okMarker) {
+		return []string{fmt.Sprintf("SSH login to %s@%s:%d works and docker is available on the target.", sshUser, targetIP, targetSSHPort)}, nil
+	}
+	if strings.Contains(combined, noDockerMarker) {
+		return nil, fmt.Errorf("SSH login to %s@%s works, but docker is not installed or not in PATH on the target", sshUser, targetIP)
+	}
+
+	lower := strings.ToLower(combined)
+	if strings.Contains(lower, "permission denied") || strings.Contains(lower, "publickey") {
+		return nil, fmt.Errorf(
+			"target %s:%d accepted the connection but sshd refused the migration key for user %q. Check on the target: PermitRootLogin allows key login (prohibit-password or yes, not no) if migrating as root, PubkeyAuthentication is on, and %s's ~/.ssh/authorized_keys exists with 0600 perms in a 0700 ~/.ssh. sshd replied:\n%s",
+			targetIP, targetSSHPort, sshUser, sshUser, combined,
+		)
+	}
+
+	detail := combined
+	if detail == "" {
+		detail = "no output from ssh"
+	}
+	return nil, fmt.Errorf("could not establish an SSH session to %s@%s:%d: %v\n%s", sshUser, targetIP, targetSSHPort, runErr, detail)
+}
+
 // PrepareMigrationTargetKey adds the ephemeral public key to the agent user's
 // authorized_keys on the target VPS and returns the username the source must log
 // in as.

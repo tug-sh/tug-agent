@@ -20,7 +20,7 @@ const (
 	deployTimeout             = 2 * time.Minute
 	snapshotPullTimeout       = 20 * time.Second
 	serverResetTimeout        = 15 * time.Second
-	migrationPreflightTimeout = 20 * time.Second
+	migrationPreflightTimeout = 25 * time.Second
 	defaultLogsTailLines      = 200
 	maxLogsTailLines          = 2000
 )
@@ -218,6 +218,18 @@ func (runtime *Runtime) handlePrepareMigrationTarget(request commandRequest) ([]
 func (runtime *Runtime) handleMigrationPreflight(request commandRequest) ([]string, error) {
 	migCtx, cancel := request.withTimeout(migrationPreflightTimeout)
 	defer cancel()
+	// With the ephemeral key present, verify a real SSH login (catches
+	// PermitRootLogin/PubkeyAuthentication and a missing docker); otherwise fall
+	// back to a plain reachability probe.
+	if strings.TrimSpace(request.command.EphemeralKey) != "" {
+		return docker.CheckMigrationConnectivity(
+			migCtx,
+			request.command.TargetIP,
+			request.command.TargetSSHPort,
+			request.command.SSHUser,
+			request.command.EphemeralKey,
+		)
+	}
 	return docker.CheckMigrationReachable(migCtx, request.command.TargetIP, request.command.TargetSSHPort)
 }
 
