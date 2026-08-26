@@ -6,11 +6,31 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// migrationTargetUser resolves the account the ephemeral key is installed for
+// on the target: the user the agent itself runs as. The source logs in over SSH
+// as this same user, so the two must agree. It is read from the passwd database
+// by uid rather than from $HOME, because the agent runs under systemd, which
+// frequently leaves $HOME unset or "/" — installing the key at
+// "/.ssh/authorized_keys" is what made the target answer "Permission denied
+// (publickey)" despite a valid key. Logging in as the agent's own user also
+// works where direct root SSH is disabled, and that user already drives docker.
+func migrationTargetUser() (username string, sshDir string) {
+	if u, err := user.Current(); err == nil {
+		name := strings.TrimSpace(u.Username)
+		home := strings.TrimSpace(u.HomeDir)
+		if name != "" && home != "" {
+			return name, filepath.Join(home, ".ssh")
+		}
+	}
+	return "root", "/root/.ssh"
+}
 
 // CheckMigrationReachable confirms, from the source machine, that the target's
 // SSH port can be opened. It is the preflight for a direct migration: if the
@@ -39,34 +59,41 @@ func CheckMigrationReachable(ctx context.Context, targetIP string, targetSSHPort
 	return []string{fmt.Sprintf("Target %s is reachable over SSH.", addr)}, nil
 }
 
-// PrepareMigrationTargetKey adds the ephemeral public key to authorized_keys on target VPS
-func PrepareMigrationTargetKey(ctx context.Context, ephemeralPublicKey string) error {
+// PrepareMigrationTargetKey adds the ephemeral public key to the agent user's
+// authorized_keys on the target VPS and returns the username the source must log
+// in as.
+func PrepareMigrationTargetKey(ctx context.Context, ephemeralPublicKey string) (string, error) {
 	ephemeralPublicKey = strings.TrimSpace(ephemeralPublicKey)
 	if ephemeralPublicKey == "" {
-		return fmt.Errorf("ephemeral_key is required")
+		return "", fmt.Errorf("ephemeral_key is required")
 	}
 
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		homeDir = "/root"
-	}
-	sshDir := filepath.Join(homeDir, ".ssh")
+	username, sshDir := migrationTargetUser()
 	if err := os.MkdirAll(sshDir, 0700); err != nil {
-		return fmt.Errorf("failed to create .ssh directory: %w", err)
+		return "", fmt.Errorf("failed to create .ssh directory: %w", err)
 	}
 
 	authKeysPath := filepath.Join(sshDir, "authorized_keys")
+
+	// Skip if the key is already present so repeated migrations do not pile up
+	// duplicate lines in the user's authorized_keys.
+	if existing, err := os.ReadFile(authKeysPath); err == nil {
+		if strings.Contains(string(existing), ephemeralPublicKey) {
+			return username, nil
+		}
+	}
+
 	f, err := os.OpenFile(authKeysPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
-		return fmt.Errorf("failed to open authorized_keys: %w", err)
+		return "", fmt.Errorf("failed to open authorized_keys: %w", err)
 	}
 	defer f.Close()
 
 	if _, err := f.WriteString("\n" + ephemeralPublicKey + "\n"); err != nil {
-		return fmt.Errorf("failed to write key to authorized_keys: %w", err)
+		return "", fmt.Errorf("failed to write key to authorized_keys: %w", err)
 	}
 
-	return nil
+	return username, nil
 }
 
 // CleanupMigrationTargetKey removes an ephemeral key from authorized_keys
@@ -76,11 +103,8 @@ func CleanupMigrationTargetKey(ctx context.Context, ephemeralPublicKey string) e
 		return nil
 	}
 
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		homeDir = "/root"
-	}
-	authKeysPath := filepath.Join(homeDir, ".ssh", "authorized_keys")
+	_, sshDir := migrationTargetUser()
+	authKeysPath := filepath.Join(sshDir, "authorized_keys")
 	content, err := os.ReadFile(authKeysPath)
 	if err != nil {
 		return nil
@@ -107,6 +131,7 @@ func (manager *Manager) MigrateContainerToTarget(
 	containerID string,
 	targetIP string,
 	targetSSHPort int,
+	sshUser string,
 	ephemeralPrivateKey string,
 	moveMode bool,
 	report func(string),
@@ -120,6 +145,14 @@ func (manager *Manager) MigrateContainerToTarget(
 	containerID = strings.TrimSpace(containerID)
 	targetIP = strings.TrimSpace(targetIP)
 	ephemeralPrivateKey = strings.TrimSpace(ephemeralPrivateKey)
+
+	// The login user is chosen by the target (the user its agent runs as), not
+	// assumed to be root: the ephemeral key was installed in that user's
+	// authorized_keys, and this login must match.
+	sshUser = strings.TrimSpace(sshUser)
+	if sshUser == "" {
+		sshUser = "root"
+	}
 
 	if containerID == "" || targetIP == "" || ephemeralPrivateKey == "" {
 		return fmt.Errorf("container_id, target_ip, and ephemeral_key are required")
@@ -165,7 +198,7 @@ func (manager *Manager) MigrateContainerToTarget(
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "ConnectTimeout=15",
-		fmt.Sprintf("root@%s", targetIP),
+		fmt.Sprintf("%s@%s", sshUser, targetIP),
 		fmt.Sprintf("docker load && docker run -d --name %s %s", containerName, tempImageTag),
 	}
 
@@ -226,7 +259,7 @@ func (manager *Manager) MigrateContainerToTarget(
 	if sshErr != nil {
 		detail := strings.TrimSpace(sshOut.String())
 		if detail == "" {
-			detail = fmt.Sprintf("could not reach root@%s:%d over SSH", targetIP, targetSSHPort)
+			detail = fmt.Sprintf("could not reach %s@%s:%d over SSH", sshUser, targetIP, targetSSHPort)
 		}
 		return fmt.Errorf("ssh restore on target failed: %w\n%s", sshErr, detail)
 	}

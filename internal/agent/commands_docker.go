@@ -202,10 +202,13 @@ func (runtime *Runtime) handleContainerInspect(request commandRequest) ([]string
 }
 
 func (runtime *Runtime) handlePrepareMigrationTarget(request commandRequest) ([]string, error) {
-	if err := docker.PrepareMigrationTargetKey(request.ctx, request.command.EphemeralKey); err != nil {
+	sshUser, err := docker.PrepareMigrationTargetKey(request.ctx, request.command.EphemeralKey)
+	if err != nil {
 		return nil, err
 	}
-	return []string{"Prepared target VPS migration SSH key successfully."}, nil
+	// The source needs to log in as the exact user the key was installed for.
+	request.setPayload(protocol.MigrationTargetPrepared{SSHUser: sshUser})
+	return []string{fmt.Sprintf("Prepared target VPS migration SSH key for user %q.", sshUser)}, nil
 }
 
 // handleMigrationPreflight answers, from the source machine, whether the target
@@ -245,6 +248,7 @@ func (runtime *Runtime) handleMigrateContainerSource(request commandRequest) ([]
 		containerID,
 		request.command.TargetIP,
 		request.command.TargetSSHPort,
+		request.command.SSHUser,
 		request.command.EphemeralKey,
 		request.command.MoveMode,
 		report,
