@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -67,7 +68,11 @@ func CleanupMigrationTargetKey(ctx context.Context, ephemeralPublicKey string) e
 	return os.WriteFile(authKeysPath, []byte(strings.Join(filtered, "\n")), 0600)
 }
 
-// MigrateContainerToTarget exports, transfers via SCP/SSH, and restores a container on a target VPS.
+// MigrateContainerToTarget exports, transfers via SCP/SSH, and restores a
+// container on a target VPS. report, when set, receives a line for each step so
+// the caller can stream progress into the task history; it also carries the
+// output of the remote side, which is where the reason for a failure usually
+// lives.
 func (manager *Manager) MigrateContainerToTarget(
 	ctx context.Context,
 	containerID string,
@@ -75,7 +80,14 @@ func (manager *Manager) MigrateContainerToTarget(
 	targetSSHPort int,
 	ephemeralPrivateKey string,
 	moveMode bool,
+	report func(string),
 ) error {
+	note := func(format string, args ...any) {
+		if report != nil {
+			report(fmt.Sprintf(format, args...))
+		}
+	}
+
 	containerID = strings.TrimSpace(containerID)
 	targetIP = strings.TrimSpace(targetIP)
 	ephemeralPrivateKey = strings.TrimSpace(ephemeralPrivateKey)
@@ -88,6 +100,7 @@ func (manager *Manager) MigrateContainerToTarget(
 	}
 
 	// 1. Get container info (name, image, status)
+	note("Inspecting container %s...", containerID)
 	name, err := output(ctx, "inspect", "--format={{.Name}}", containerID)
 	if err != nil {
 		return fmt.Errorf("failed to inspect container name: %w", err)
@@ -95,12 +108,14 @@ func (manager *Manager) MigrateContainerToTarget(
 	containerName := strings.TrimPrefix(strings.TrimSpace(name), "/")
 
 	// 2. Stop container on source
+	note("Stopping container %s on source...", containerName)
 	_, _ = combined(ctx, "stop", containerID)
 
 	// 3. Commit container to temporary image tag
 	tempImageTag := fmt.Sprintf("tug-migrated-%s:%d", containerID, time.Now().Unix())
-	if _, err := combined(ctx, "commit", containerID, tempImageTag); err != nil {
-		return fmt.Errorf("failed to commit container image: %w", err)
+	note("Committing container to image %s...", tempImageTag)
+	if out, err := combined(ctx, "commit", containerID, tempImageTag); err != nil {
+		return fmt.Errorf("failed to commit container image: %w\n%s", err, strings.TrimSpace(out))
 	}
 	defer func() {
 		_, _ = combined(ctx, "rmi", tempImageTag)
@@ -114,18 +129,30 @@ func (manager *Manager) MigrateContainerToTarget(
 	defer os.Remove(keyPath)
 
 	// 5. Stream image to target VPS and run it
+	note("Streaming image to %s:%d and restoring...", targetIP, targetSSHPort)
 	sshArgs := []string{
 		"-p", fmt.Sprintf("%d", targetSSHPort),
 		"-i", keyPath,
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "ConnectTimeout=15",
 		fmt.Sprintf("root@%s", targetIP),
 		fmt.Sprintf("docker load && docker run -d --name %s %s", containerName, tempImageTag),
 	}
-	
+
 	cmdSSH := execCommandContext(ctx, "ssh", sshArgs...)
 	cmdSave := execCommandContext(ctx, "docker", "save", tempImageTag)
-	
+
+	// The remote side speaks over stdout/stderr: "docker load" prints the image
+	// it read, "docker run" prints the new id, and any failure prints why. All
+	// of it is captured so a broken migration is diagnosable from the logs
+	// rather than a bare "exit status 1".
+	var sshOut bytes.Buffer
+	var saveErr bytes.Buffer
+	cmdSSH.Stdout = &sshOut
+	cmdSSH.Stderr = &sshOut
+	cmdSave.Stderr = &saveErr
+
 	// Pipe docker save directly to ssh
 	pipeReader, pipeWriter, err := os.Pipe()
 	if err != nil {
@@ -133,32 +160,48 @@ func (manager *Manager) MigrateContainerToTarget(
 	}
 	cmdSave.Stdout = pipeWriter
 	cmdSSH.Stdin = pipeReader
-	
-	// We only need CombinedOutput from ssh to see if load/run failed
+
 	if err := cmdSave.Start(); err != nil {
 		pipeReader.Close()
 		pipeWriter.Close()
 		return fmt.Errorf("failed to start docker save: %w", err)
 	}
-	
+
 	if err := cmdSSH.Start(); err != nil {
 		pipeReader.Close()
 		pipeWriter.Close()
 		return fmt.Errorf("failed to start ssh transfer: %w", err)
 	}
-	
-	// Wait for save to finish, then close writer so ssh knows EOF
+
+	// Wait for save to finish, then close the writer so ssh reads EOF. The save
+	// error is kept rather than dropped: a save that dies mid-stream leaves ssh
+	// to fail on truncated input, and the real cause is on this side.
+	saveDone := make(chan error, 1)
 	go func() {
-		_ = cmdSave.Wait()
+		e := cmdSave.Wait()
 		pipeWriter.Close()
+		saveDone <- e
 	}()
-	
-	if err := cmdSSH.Wait(); err != nil {
-		return fmt.Errorf("ssh restore on target failed: %w", err)
+
+	sshErr := cmdSSH.Wait()
+	// ssh is done with its stdin; dropping our end unblocks a save still trying
+	// to write into a pipe nobody reads, so it fails fast instead of hanging.
+	pipeReader.Close()
+	saveWaitErr := <-saveDone
+
+	if saveWaitErr != nil {
+		return fmt.Errorf("docker save failed: %w\n%s", saveWaitErr, strings.TrimSpace(saveErr.String()))
+	}
+	if sshErr != nil {
+		return fmt.Errorf("ssh restore on target failed: %w\n%s", sshErr, strings.TrimSpace(sshOut.String()))
+	}
+	if out := strings.TrimSpace(sshOut.String()); out != "" {
+		note("%s", out)
 	}
 
 	// 8. If move mode, remove source container
 	if moveMode {
+		note("Removing container %s from source...", containerName)
 		_, _ = combined(ctx, "rm", "-f", containerID)
 	}
 

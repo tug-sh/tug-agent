@@ -79,7 +79,7 @@ func TestMigrateContainerToTarget_Success(t *testing.T) {
 	mgr := NewManager()
 	ctx := context.Background()
 
-	err := mgr.MigrateContainerToTarget(ctx, "test_container", "1.2.3.4", 2222, "private-key", false)
+	err := mgr.MigrateContainerToTarget(ctx, "test_container", "1.2.3.4", 2222, "private-key", false, nil)
 	if err != nil {
 		t.Fatalf("expected success, got error: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestMigrateContainerToTarget_FailInspect(t *testing.T) {
 	mgr := NewManager()
 	ctx := context.Background()
 
-	err := mgr.MigrateContainerToTarget(ctx, "fail_inspect", "1.2.3.4", 2222, "private-key", false)
+	err := mgr.MigrateContainerToTarget(ctx, "fail_inspect", "1.2.3.4", 2222, "private-key", false, nil)
 	if err == nil {
 		t.Fatalf("expected failure from inspect, got success")
 	}
@@ -110,7 +110,7 @@ func TestMigrateContainerToTarget_FailCommit(t *testing.T) {
 	mgr := NewManager()
 	ctx := context.Background()
 
-	err := mgr.MigrateContainerToTarget(ctx, "fail_commit", "1.2.3.4", 2222, "private-key", false)
+	err := mgr.MigrateContainerToTarget(ctx, "fail_commit", "1.2.3.4", 2222, "private-key", false, nil)
 	if err == nil {
 		t.Fatalf("expected failure from commit, got success")
 	}
@@ -127,7 +127,7 @@ func TestMigrateContainerToTarget_FailSSH(t *testing.T) {
 	mgr := NewManager()
 	ctx := context.Background()
 
-	err := mgr.MigrateContainerToTarget(ctx, "test_container", "fail_ssh", 2222, "private-key", false)
+	err := mgr.MigrateContainerToTarget(ctx, "test_container", "fail_ssh", 2222, "private-key", false, nil)
 	if err == nil {
 		t.Fatalf("expected failure from ssh, got success")
 	}

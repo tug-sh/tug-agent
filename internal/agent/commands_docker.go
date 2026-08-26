@@ -215,6 +215,20 @@ func (runtime *Runtime) handleMigrateContainerSource(request commandRequest) ([]
 	migCtx, cancel := request.withTimeout(5 * time.Minute)
 	defer cancel()
 
+	// Each step is streamed as progress so the task history fills in live, and
+	// the same lines are returned so they survive as the final result even if
+	// the browser was not watching. On failure the collected steps go back too,
+	// so the log shows how far it got before the error.
+	var logs []string
+	report := func(line string) {
+		logs = append(logs, line)
+		runtime.sendProgress(request.conn, protocol.CommandProgress{
+			CommandID: request.command.CommandID,
+			Status:    protocol.StatusRunning,
+			Logs:      []string{line},
+		})
+	}
+
 	err = runtime.dockerManager.MigrateContainerToTarget(
 		migCtx,
 		containerID,
@@ -222,11 +236,13 @@ func (runtime *Runtime) handleMigrateContainerSource(request commandRequest) ([]
 		request.command.TargetSSHPort,
 		request.command.EphemeralKey,
 		request.command.MoveMode,
+		report,
 	)
 	if err != nil {
-		return nil, err
+		return logs, err
 	}
 
 	_ = runtime.sendSnapshot()
-	return []string{fmt.Sprintf("Migrated container %s to target %s successfully.", containerID, request.command.TargetIP)}, nil
+	logs = append(logs, fmt.Sprintf("Migrated container %s to target %s successfully.", containerID, request.command.TargetIP))
+	return logs, nil
 }
