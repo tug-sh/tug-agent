@@ -13,6 +13,30 @@ import (
 	"time"
 )
 
+// migrationDocsURL points at the manual section that explains the target's SSH
+// requirements. Migration failures reference it instead of dumping every knob a
+// user might have to touch into the error itself.
+const migrationDocsURL = "https://tug.sh/docs/4-security-and-connectivity#migrating-containers-between-servers"
+
+// sshNoise drops the lines ssh prints that are not the reason for a failure,
+// such as the "Permanently added ... to the list of known hosts" warning that
+// StrictHostKeyChecking=no always emits, so the message shows the actual reply.
+func sshNoise(output string) string {
+	lines := strings.Split(output, "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "Warning: Permanently added") {
+			continue
+		}
+		kept = append(kept, trimmed)
+	}
+	return strings.Join(kept, "; ")
+}
+
 // migrationTargetUser resolves the account the ephemeral key is installed for
 // on the target: the user the agent itself runs as. The source logs in over SSH
 // as this same user, so the two must agree. It is read from the passwd database
@@ -131,22 +155,22 @@ func CheckMigrationConnectivity(ctx context.Context, targetIP string, targetSSHP
 		return []string{fmt.Sprintf("SSH login to %s@%s:%d works and docker is available on the target.", sshUser, targetIP, targetSSHPort)}, nil
 	}
 	if strings.Contains(combined, noDockerMarker) {
-		return nil, fmt.Errorf("SSH login to %s@%s works, but docker is not installed or not in PATH on the target", sshUser, targetIP)
+		return nil, fmt.Errorf("SSH login as %s works, but docker is not installed or not in PATH on the target. See %s", sshUser, migrationDocsURL)
 	}
 
 	lower := strings.ToLower(combined)
 	if strings.Contains(lower, "permission denied") || strings.Contains(lower, "publickey") {
 		return nil, fmt.Errorf(
-			"target %s:%d accepted the connection but sshd refused the migration key for user %q. Check on the target: PermitRootLogin allows key login (prohibit-password or yes, not no) if migrating as root, PubkeyAuthentication is on, and %s's ~/.ssh/authorized_keys exists with 0600 perms in a 0700 ~/.ssh. sshd replied:\n%s",
-			targetIP, targetSSHPort, sshUser, sshUser, combined,
+			"the target refused the migration key for user %q. On the target, allow SSH key login for that user (if it is root, set PermitRootLogin to prohibit-password). Setup guide: %s",
+			sshUser, migrationDocsURL,
 		)
 	}
 
-	detail := combined
+	detail := sshNoise(combined)
 	if detail == "" {
 		detail = "no output from ssh"
 	}
-	return nil, fmt.Errorf("could not establish an SSH session to %s@%s:%d: %v\n%s", sshUser, targetIP, targetSSHPort, runErr, detail)
+	return nil, fmt.Errorf("could not open an SSH session to the target as %s: %s. Setup guide: %s", sshUser, detail, migrationDocsURL)
 }
 
 // PrepareMigrationTargetKey adds the ephemeral public key to the agent user's
