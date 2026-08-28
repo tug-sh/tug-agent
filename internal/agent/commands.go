@@ -97,6 +97,7 @@ var commandHandlers = map[string]commandHandler{
 	protocol.CmdSelfUpdate:           (*Runtime).handleSelfUpdate,
 	protocol.CmdDisconnect:           (*Runtime).handleDisconnect,
 	protocol.CmdContainerAction:        (*Runtime).handleContainerAction,
+	protocol.CmdContainerRename:        (*Runtime).handleContainerRename,
 	protocol.CmdMigrateContainerSource: (*Runtime).handleMigrateContainerSource,
 	protocol.CmdPrepareMigrationTarget: (*Runtime).handlePrepareMigrationTarget,
 	protocol.CmdMigrationPreflight:     (*Runtime).handleMigrationPreflight,

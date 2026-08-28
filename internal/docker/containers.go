@@ -142,6 +142,24 @@ func (manager *Manager) ControlContainer(
 	return nil
 }
 
+// RenameContainer changes the Docker name of a single container. Compose still
+// owns the service name, so a later recreate reverts to the compose-derived
+// name; this is a live relabel, not a permanent redefinition.
+func (manager *Manager) RenameContainer(ctx context.Context, containerID, newName string) error {
+	containerID = strings.TrimSpace(containerID)
+	newName = strings.TrimSpace(newName)
+	if containerID == "" {
+		return fmt.Errorf("container_id is required")
+	}
+	if newName == "" {
+		return fmt.Errorf("new name is required")
+	}
+	if result, err := combined(ctx, "rename", containerID, newName); err != nil {
+		return fmt.Errorf("docker rename failed: %s: %w", strings.TrimSpace(result), err)
+	}
+	return nil
+}
+
 func (manager *Manager) GetLogsPreview(
 	ctx context.Context,
 	containerID string,

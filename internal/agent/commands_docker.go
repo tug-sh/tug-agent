@@ -63,6 +63,27 @@ func (runtime *Runtime) handleContainerAction(request commandRequest) ([]string,
 	return []string{fmt.Sprintf("Container %s %s succeeded.", containerID, request.command.Action)}, nil
 }
 
+func (runtime *Runtime) handleContainerRename(request commandRequest) ([]string, error) {
+	containerID, err := request.requireContainerID()
+	if err != nil {
+		return nil, err
+	}
+	newName, err := require(request.command.NewName, "new_name")
+	if err != nil {
+		return nil, err
+	}
+	actionCtx, cancel := request.withTimeout(containerActionTimeout)
+	defer cancel()
+
+	if err := runtime.dockerManager.RenameContainer(actionCtx, containerID, newName); err != nil {
+		return nil, err
+	}
+	if handshakeErr := runtime.sendSnapshot(); handshakeErr != nil {
+		return nil, handshakeErr
+	}
+	return []string{fmt.Sprintf("Container %s renamed to %s.", containerID, newName)}, nil
+}
+
 func (runtime *Runtime) handleServerAction(request commandRequest) ([]string, error) {
 	switch strings.TrimSpace(request.command.Action) {
 	case "restart_docker":
