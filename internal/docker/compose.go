@@ -60,9 +60,9 @@ func (manager *Manager) RedeployContainer(ctx context.Context, containerID strin
 		return transcript.Fail("container_id is required")
 	}
 
-	project := composeLabel(ctx, containerID, "com.docker.compose.project")
-	workingDir := composeLabel(ctx, containerID, "com.docker.compose.project.working_dir")
-	configFiles := composeLabel(ctx, containerID, "com.docker.compose.project.config_files")
+	project := ComposeLabel(ctx, containerID, "com.docker.compose.project")
+	workingDir := ComposeLabel(ctx, containerID, "com.docker.compose.project.working_dir")
+	configFiles := ComposeLabel(ctx, containerID, "com.docker.compose.project.config_files")
 
 	if workingDir == "" && project != "" {
 		if sbPath, err := sandbox.ResolvePath(filepath.Join("projects", project)); err == nil {
@@ -113,9 +113,9 @@ func (manager *Manager) RedeployContainer(ctx context.Context, containerID strin
 	return transcript.Done("Redeploy finished successfully.")
 }
 
-// composeLabel reads a single label off a container, returning "" when the
+// ComposeLabel reads a single label off a container, returning "" when the
 // label is absent so callers can fall back cleanly.
-func composeLabel(ctx context.Context, containerID, label string) string {
+func ComposeLabel(ctx context.Context, containerID, label string) string {
 	template := fmt.Sprintf("{{ index .Config.Labels %q }}", label)
 	value, err := output(ctx, "inspect", "--format", template, containerID)
 	if err != nil {

@@ -46,6 +46,11 @@ func (runtime *Runtime) handleContainerAction(request commandRequest) ([]string,
 	actionCtx, cancel := request.withTimeout(containerActionTimeout)
 	defer cancel()
 
+	project := ""
+	if request.command.Action == "remove" {
+		project = docker.ComposeLabel(actionCtx, containerID, "com.docker.compose.project")
+	}
+
 	err = runtime.dockerManager.ControlContainer(
 		actionCtx,
 		containerID,
@@ -56,6 +61,13 @@ func (runtime *Runtime) handleContainerAction(request commandRequest) ([]string,
 	if err != nil {
 		return nil, err
 	}
+
+	if request.command.Action == "remove" && project != "" {
+		if sbPath, pathErr := sandbox.ResolvePath(filepath.Join("projects", project)); pathErr == nil {
+			_ = os.RemoveAll(sbPath)
+		}
+	}
+
 	if handshakeErr := runtime.sendSnapshot(); handshakeErr != nil {
 		return nil, handshakeErr
 	}
