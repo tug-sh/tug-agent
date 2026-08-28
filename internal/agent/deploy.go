@@ -57,6 +57,9 @@ func (runtime *Runtime) handleGitDeploy(ctx context.Context, cmd protocol.Comman
 	if fetchErr := fetchRepository(ctx, transcript, deployDir, repoURL, branch); fetchErr != nil {
 		return transcript.Lines(), fetchErr
 	}
+	if commitOut, err := exec.CommandContext(ctx, "git", "-C", deployDir, "log", "-1", "--pretty=format:%h - %s").Output(); err == nil && len(commitOut) > 0 {
+		transcript.Addf("Commit: %s", strings.TrimSpace(string(commitOut)))
+	}
 	syncProjectEnvFile(deployDir, cmd.ProjectID, transcript)
 
 	// Nixpacks builds an image straight from the source tree, no compose or
