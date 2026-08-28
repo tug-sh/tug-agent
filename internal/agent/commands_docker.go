@@ -156,6 +156,29 @@ func (runtime *Runtime) handleDeploy(request commandRequest) ([]string, error) {
 	return logs, nil
 }
 
+// handleContainerRedeploy re-runs the compose project a container belongs to,
+// recreating it from its own on-disk compose. It needs no Tug project, so it
+// works for containers that were deployed straight onto a machine (the
+// Unassigned bucket) as well as ones grouped into a folder.
+func (runtime *Runtime) handleContainerRedeploy(request commandRequest) ([]string, error) {
+	containerID, err := request.requireContainerID()
+	if err != nil {
+		return nil, err
+	}
+	deployCtx, cancel := request.withTimeout(deployTimeout)
+	defer cancel()
+
+	logs, redeployErr := runtime.dockerManager.RedeployContainer(deployCtx, containerID)
+	if redeployErr != nil {
+		return logs, redeployErr
+	}
+	if handshakeErr := runtime.sendSnapshot(); handshakeErr != nil {
+		return logs, handshakeErr
+	}
+	runtime.publishAllContainerStatuses(request.ctx, request.conn)
+	return logs, nil
+}
+
 func (runtime *Runtime) handleContainerLogsTail(request commandRequest) ([]string, error) {
 	containerID, err := request.requireContainerID()
 	if err != nil {

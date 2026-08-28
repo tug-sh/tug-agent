@@ -110,6 +110,7 @@ var commandHandlers = map[string]commandHandler{
 	protocol.CmdContainerLogsTail:    (*Runtime).handleContainerLogsTail,
 	protocol.CmdContainersSnapshot:   (*Runtime).handleContainersSnapshotPull,
 	protocol.CmdDeploy:               (*Runtime).handleDeploy,
+	protocol.CmdContainerRedeploy:    (*Runtime).handleContainerRedeploy,
 	protocol.CmdRouterInstall:        (*Runtime).handleInstallTugRouter,
 	protocol.CmdRouterRouteConfigure: (*Runtime).handleConfigureTugRouterRoute,
 	protocol.CmdRouterRouteList:      (*Runtime).handleListTugRouterRoutes,

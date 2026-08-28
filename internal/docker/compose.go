@@ -48,6 +48,77 @@ func DeployCommand(ctx context.Context, customCommand string, composeArgs ...str
 	return cmd, composeName + " " + strings.Join(composeArgs, " ")
 }
 
+// RedeployContainer recreates the compose project a container belongs to,
+// reading the compose labels Docker itself stamps on every compose-managed
+// container. This makes a redeploy possible without any server-side record of
+// how the container was created: the machine is the source of truth.
+func (manager *Manager) RedeployContainer(ctx context.Context, containerID string) ([]string, error) {
+	containerID = strings.TrimSpace(containerID)
+	if containerID == "" {
+		return nil, fmt.Errorf("container_id is required")
+	}
+
+	project := composeLabel(ctx, containerID, "com.docker.compose.project")
+	workingDir := composeLabel(ctx, containerID, "com.docker.compose.project.working_dir")
+	configFiles := composeLabel(ctx, containerID, "com.docker.compose.project.config_files")
+	if project == "" || workingDir == "" {
+		return nil, fmt.Errorf("this container was not deployed with Docker Compose, so it cannot be redeployed from here")
+	}
+
+	files := splitComposeConfigFiles(configFiles)
+	if len(files) == 0 {
+		files = []string{filepath.Join(workingDir, "docker-compose.yml")}
+	}
+
+	args := []string{"-p", project}
+	for _, file := range files {
+		if !filepath.IsAbs(file) {
+			file = filepath.Join(workingDir, file)
+		}
+		args = append(args, "-f", file)
+	}
+	args = append(args, "up", "-d")
+
+	transcript := logging.NewTranscript(fmt.Sprintf("Redeploying compose project %s...", project))
+	cmd, composeName := ComposeCommand(ctx, args...)
+	cmd.Dir = workingDir
+	transcript.Addf("Command: %s %s", composeName, strings.Join(args, " "))
+
+	output, err := cmd.CombinedOutput()
+	transcript.AddCommandOutput(strings.TrimSpace(string(output)))
+	if err != nil {
+		return transcript.Fail("compose up failed: %v", err)
+	}
+	return transcript.Done("Redeploy finished successfully.")
+}
+
+// composeLabel reads a single label off a container, returning "" when the
+// label is absent so callers can fall back cleanly.
+func composeLabel(ctx context.Context, containerID, label string) string {
+	template := fmt.Sprintf("{{ index .Config.Labels %q }}", label)
+	value, err := output(ctx, "inspect", "--format", template, containerID)
+	if err != nil {
+		return ""
+	}
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "<no value>" {
+		return ""
+	}
+	return trimmed
+}
+
+// splitComposeConfigFiles parses the config_files label, which Docker writes as
+// a comma-separated list of the compose files that built the project.
+func splitComposeConfigFiles(raw string) []string {
+	files := make([]string, 0, 2)
+	for _, part := range strings.Split(raw, ",") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			files = append(files, trimmed)
+		}
+	}
+	return files
+}
+
 // DeployCompose runs the compose file, or a custom command when the project
 // overrides it, and returns the transcript shown in the dashboard.
 func (manager *Manager) DeployCompose(ctx context.Context, composePath string, customCommand string) ([]string, error) {
