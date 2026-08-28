@@ -47,8 +47,10 @@ func (runtime *Runtime) handleContainerAction(request commandRequest) ([]string,
 	defer cancel()
 
 	project := ""
+	workingDir := ""
 	if request.command.Action == "remove" {
 		project = docker.ComposeLabel(actionCtx, containerID, "com.docker.compose.project")
+		workingDir = docker.ComposeLabel(actionCtx, containerID, "com.docker.compose.project.working_dir")
 	}
 
 	err = runtime.dockerManager.ControlContainer(
@@ -62,9 +64,19 @@ func (runtime *Runtime) handleContainerAction(request commandRequest) ([]string,
 		return nil, err
 	}
 
-	if request.command.Action == "remove" && project != "" {
-		if sbPath, pathErr := sandbox.ResolvePath(filepath.Join("projects", project)); pathErr == nil {
+	if request.command.Action == "remove" {
+		if project != "" {
+			if sbPath, pathErr := sandbox.ResolvePath(filepath.Join("projects", project)); pathErr == nil {
+				_ = os.RemoveAll(sbPath)
+			}
+		}
+		if sbPath, pathErr := sandbox.ResolvePath(filepath.Join("projects", containerID)); pathErr == nil {
 			_ = os.RemoveAll(sbPath)
+		}
+		if workingDir != "" {
+			if sbRoot, pathErr := sandbox.ResolvePath("."); pathErr == nil && strings.HasPrefix(workingDir, sbRoot) {
+				_ = os.RemoveAll(workingDir)
+			}
 		}
 	}
 
