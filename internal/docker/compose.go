@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -54,15 +55,32 @@ func DeployCommand(ctx context.Context, customCommand string, composeArgs ...str
 // how the container was created: the machine is the source of truth.
 func (manager *Manager) RedeployContainer(ctx context.Context, containerID string) ([]string, error) {
 	containerID = strings.TrimSpace(containerID)
+	transcript := logging.NewTranscript(fmt.Sprintf("Preparing redeploy for container %s...", containerID))
 	if containerID == "" {
-		return nil, fmt.Errorf("container_id is required")
+		return transcript.Fail("container_id is required")
 	}
 
 	project := composeLabel(ctx, containerID, "com.docker.compose.project")
 	workingDir := composeLabel(ctx, containerID, "com.docker.compose.project.working_dir")
 	configFiles := composeLabel(ctx, containerID, "com.docker.compose.project.config_files")
+
+	if workingDir == "" && project != "" {
+		if sbPath, err := sandbox.ResolvePath(filepath.Join("projects", project)); err == nil {
+			if _, statErr := os.Stat(filepath.Join(sbPath, "docker-compose.yml")); statErr == nil {
+				workingDir = sbPath
+			}
+		}
+	}
+
 	if project == "" || workingDir == "" {
-		return nil, fmt.Errorf("this container was not deployed with Docker Compose, so it cannot be redeployed from here")
+		transcript.Addf("Inspecting container %s labels...", containerID)
+		if project == "" {
+			transcript.Addf("Missing label com.docker.compose.project on container %s", containerID)
+		}
+		if workingDir == "" {
+			transcript.Addf("Missing label com.docker.compose.project.working_dir on container %s", containerID)
+		}
+		return transcript.Fail("this container was not deployed with Docker Compose, so it cannot be redeployed from here")
 	}
 
 	files := splitComposeConfigFiles(configFiles)
@@ -79,13 +97,16 @@ func (manager *Manager) RedeployContainer(ctx context.Context, containerID strin
 	}
 	args = append(args, "up", "-d")
 
-	transcript := logging.NewTranscript(fmt.Sprintf("Redeploying compose project %s...", project))
+	transcript.Addf("Redeploying compose project %s in %s...", project, workingDir)
 	cmd, composeName := ComposeCommand(ctx, args...)
 	cmd.Dir = workingDir
 	transcript.Addf("Command: %s %s", composeName, strings.Join(args, " "))
 
 	output, err := cmd.CombinedOutput()
-	transcript.AddCommandOutput(strings.TrimSpace(string(output)))
+	outputText := strings.TrimSpace(string(output))
+	if outputText != "" {
+		transcript.AddCommandOutput(outputText)
+	}
 	if err != nil {
 		return transcript.Fail("compose up failed: %v", err)
 	}
