@@ -143,5 +143,10 @@ func (runtime *Runtime) handleTerminal(request commandRequest) ([]string, error)
 }
 
 func (runtime *Runtime) handleGitDeployCommand(request commandRequest) ([]string, error) {
-	return runtime.handleGitDeploy(request.ctx, request.command)
+	logs, err := runtime.handleGitDeploy(request.ctx, request.command)
+	if snapErr := runtime.sendSnapshot(); snapErr != nil && err == nil {
+		err = snapErr
+	}
+	runtime.publishAllContainerStatuses(request.ctx, request.conn)
+	return logs, err
 }

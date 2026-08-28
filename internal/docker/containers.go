@@ -75,23 +75,40 @@ func (manager *Manager) listContainers(
 			continue
 		}
 		parts := strings.Split(line, "\t")
-		if len(parts) < 8 {
+		if len(parts) < 5 {
 			continue
 		}
 		containerID := strings.TrimSpace(parts[0])
+		name := strings.TrimSpace(parts[1])
+		image := strings.TrimSpace(parts[2])
+		ports := strings.TrimSpace(parts[3])
+		status := normalizeContainerStatus(parts[4])
+		networks := []string{}
+		if len(parts) > 5 {
+			networks = splitCSV(parts[5])
+		}
+		projectID := ""
+		if len(parts) > 6 {
+			projectID = strings.TrimSpace(parts[6])
+		}
+		app := ""
+		if len(parts) > 7 {
+			app = strings.TrimSpace(parts[7])
+		}
+
 		logsPreview := []string{}
 		if includeLogsPreview {
 			logsPreview, _ = manager.GetLogsPreview(ctx, containerID, defaultLogsPreviewLines)
 		}
 		containers = append(containers, protocol.HandshakeContainer{
 			ID:          containerID,
-			Name:        strings.TrimSpace(parts[1]),
-			Image:       strings.TrimSpace(parts[2]),
-			Ports:       strings.TrimSpace(parts[3]),
-			Status:      normalizeContainerStatus(parts[4]),
-			Networks:    splitCSV(parts[5]),
-			ProjectID:   strings.TrimSpace(parts[6]),
-			App:         strings.TrimSpace(parts[7]),
+			Name:        name,
+			Image:       image,
+			Ports:       ports,
+			Status:      status,
+			Networks:    networks,
+			ProjectID:   projectID,
+			App:         app,
 			LogsPreview: logsPreview,
 		})
 	}
