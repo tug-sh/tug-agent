@@ -361,6 +361,11 @@ func parseLogsArgs(args []string) (bool, int) {
 	return follow, limit
 }
 
+func parseLogsLimit(args []string) int {
+	_, limit := parseLogsArgs(args)
+	return limit
+}
+
 func clampLogLimit(n int) int {
 	if n < 1 {
 		return defaultAgentLogLines

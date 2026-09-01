@@ -11,8 +11,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.AgentVersion != defaultAgentVersion {
 		t.Errorf("AgentVersion = %q, want %q", cfg.AgentVersion, defaultAgentVersion)
 	}
-	if cfg.HeartbeatInterval != 30*time.Second {
-		t.Errorf("HeartbeatInterval = %s, want 30s", cfg.HeartbeatInterval)
+	if cfg.HeartbeatInterval != 15*time.Second {
+		t.Errorf("HeartbeatInterval = %s, want 15s", cfg.HeartbeatInterval)
 	}
 	if cfg.RouterImage != defaultRouterImage || cfg.RouterConfigPath != defaultRouterConfigPath {
 		t.Errorf("unexpected router defaults: %+v", cfg)
@@ -50,8 +50,8 @@ func TestLoadClampsIntervals(t *testing.T) {
 
 func TestLoadIgnoresUnparsableDurations(t *testing.T) {
 	t.Setenv("TUG_AGENT_HEARTBEAT_INTERVAL", "soon")
-	if got := Load().HeartbeatInterval; got != 30*time.Second {
-		t.Errorf("HeartbeatInterval = %s, want the 30s default", got)
+	if got := Load().HeartbeatInterval; got != 15*time.Second {
+		t.Errorf("HeartbeatInterval = %s, want the 15s default", got)
 	}
 }
 
