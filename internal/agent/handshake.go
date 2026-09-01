@@ -17,6 +17,7 @@ import (
 
 	"tug.sh/pkg/protocol"
 	"tug.sh/services/agent/internal/sandbox"
+	"tug.sh/services/agent/internal/security"
 	"tug.sh/services/agent/internal/system"
 )
 
@@ -119,6 +120,7 @@ func (runtime *Runtime) sendHeartbeat(conn *websocket.Conn) error {
 		DiskFreeBytes:    diskFree,
 		DiskTotalBytes:   diskTotal,
 		ContainerMetrics: containerStats,
+		SecurityStatus:   security.InspectSecurityStatus(ctx),
 	}
 	if err := runtime.emitSignal(conn, protocol.EntityRuntime, protocol.ActionHeartbeat, heartbeat); err != nil {
 		return fmt.Errorf("cannot write heartbeat: %w", err)
