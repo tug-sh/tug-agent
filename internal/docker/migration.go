@@ -38,22 +38,58 @@ func sshNoise(output string) string {
 }
 
 // migrationTargetUser resolves the account the ephemeral key is installed for
-// on the target: the user the agent itself runs as. The source logs in over SSH
-// as this same user, so the two must agree. It is read from the passwd database
-// by uid rather than from $HOME, because the agent runs under systemd, which
-// frequently leaves $HOME unset or "/" — installing the key at
-// "/.ssh/authorized_keys" is what made the target answer "Permission denied
-// (publickey)" despite a valid key. Logging in as the agent's own user also
-// works where direct root SSH is disabled, and that user already drives docker.
-func migrationTargetUser() (username string, sshDir string) {
-	if u, err := user.Current(); err == nil {
-		name := strings.TrimSpace(u.Username)
-		home := strings.TrimSpace(u.HomeDir)
-		if name != "" && home != "" {
-			return name, filepath.Join(home, ".ssh")
+// on the target: either an explicitly requested user, the user the agent itself
+// runs as, or an auto-detected sudo/docker user when root login is disabled.
+func migrationTargetUser(preferredUser string) (username string, sshDir string, uid int, gid int) {
+	preferredUser = strings.TrimSpace(preferredUser)
+	if preferredUser != "" {
+		if u, err := user.Lookup(preferredUser); err == nil {
+			var uID, gID int
+			_, _ = fmt.Sscanf(u.Uid, "%d", &uID)
+			_, _ = fmt.Sscanf(u.Gid, "%d", &gID)
+			return u.Username, filepath.Join(u.HomeDir, ".ssh"), uID, gID
+		}
+		// Fallback for specified user if lookup fails
+		return preferredUser, filepath.Join("/home", preferredUser, ".ssh"), -1, -1
+	}
+
+	if u, err := user.Current(); err == nil && u.Username != "root" {
+		var uID, gID int
+		_, _ = fmt.Sscanf(u.Uid, "%d", &uID)
+		_, _ = fmt.Sscanf(u.Gid, "%d", &gID)
+		return u.Username, filepath.Join(u.HomeDir, ".ssh"), uID, gID
+	}
+
+	// If running as root, check if root SSH login is allowed
+	rootAllowed := isRootSSHAllowed()
+	if !rootAllowed {
+		// If root login is explicitly disabled (PermitRootLogin no), find a standard sudo/docker user
+		commonUsers := []string{"ubuntu", "debian", "centos", "admin", "tug", "ec2-user"}
+		for _, name := range commonUsers {
+			if u, err := user.Lookup(name); err == nil {
+				var uID, gID int
+				_, _ = fmt.Sscanf(u.Uid, "%d", &uID)
+				_, _ = fmt.Sscanf(u.Gid, "%d", &gID)
+				return u.Username, filepath.Join(u.HomeDir, ".ssh"), uID, gID
+			}
 		}
 	}
-	return "root", "/root/.ssh"
+
+	return "root", "/root/.ssh", 0, 0
+}
+
+func isRootSSHAllowed() bool {
+	cmd := execCommandContext(context.Background(), "sshd", "-T")
+	if out, err := cmd.Output(); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			parts := strings.SplitN(strings.TrimSpace(line), " ", 2)
+			if len(parts) == 2 && strings.EqualFold(parts[0], "permitrootlogin") {
+				val := strings.ToLower(strings.TrimSpace(parts[1]))
+				return val != "no"
+			}
+		}
+	}
+	return true
 }
 
 // CheckMigrationReachable confirms, from the source machine, that the target's
@@ -173,18 +209,22 @@ func CheckMigrationConnectivity(ctx context.Context, targetIP string, targetSSHP
 	return nil, fmt.Errorf("could not open an SSH session to the target as %s: %s. Setup guide: %s", sshUser, detail, migrationDocsURL)
 }
 
-// PrepareMigrationTargetKey adds the ephemeral public key to the agent user's
+// PrepareMigrationTargetKey adds the ephemeral public key to the target user's
 // authorized_keys on the target VPS and returns the username the source must log
 // in as.
-func PrepareMigrationTargetKey(ctx context.Context, ephemeralPublicKey string) (string, error) {
+func PrepareMigrationTargetKey(ctx context.Context, ephemeralPublicKey string, preferredUser string) (string, error) {
 	ephemeralPublicKey = strings.TrimSpace(ephemeralPublicKey)
 	if ephemeralPublicKey == "" {
 		return "", fmt.Errorf("ephemeral_key is required")
 	}
 
-	username, sshDir := migrationTargetUser()
+	username, sshDir, uid, gid := migrationTargetUser(preferredUser)
 	if err := os.MkdirAll(sshDir, 0700); err != nil {
 		return "", fmt.Errorf("failed to create .ssh directory: %w", err)
+	}
+
+	if uid >= 0 && gid >= 0 && os.Geteuid() == 0 {
+		_ = os.Chown(sshDir, uid, gid)
 	}
 
 	authKeysPath := filepath.Join(sshDir, "authorized_keys")
@@ -207,17 +247,21 @@ func PrepareMigrationTargetKey(ctx context.Context, ephemeralPublicKey string) (
 		return "", fmt.Errorf("failed to write key to authorized_keys: %w", err)
 	}
 
+	if uid >= 0 && gid >= 0 && os.Geteuid() == 0 {
+		_ = os.Chown(authKeysPath, uid, gid)
+	}
+
 	return username, nil
 }
 
 // CleanupMigrationTargetKey removes an ephemeral key from authorized_keys
-func CleanupMigrationTargetKey(ctx context.Context, ephemeralPublicKey string) error {
+func CleanupMigrationTargetKey(ctx context.Context, ephemeralPublicKey string, preferredUser string) error {
 	ephemeralPublicKey = strings.TrimSpace(ephemeralPublicKey)
 	if ephemeralPublicKey == "" {
 		return nil
 	}
 
-	_, sshDir := migrationTargetUser()
+	_, sshDir, _, _ := migrationTargetUser(preferredUser)
 	authKeysPath := filepath.Join(sshDir, "authorized_keys")
 	content, err := os.ReadFile(authKeysPath)
 	if err != nil {

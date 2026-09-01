@@ -270,7 +270,7 @@ func (runtime *Runtime) handleContainerInspect(request commandRequest) ([]string
 }
 
 func (runtime *Runtime) handlePrepareMigrationTarget(request commandRequest) ([]string, error) {
-	sshUser, err := docker.PrepareMigrationTargetKey(request.ctx, request.command.EphemeralKey)
+	sshUser, err := docker.PrepareMigrationTargetKey(request.ctx, request.command.EphemeralKey, request.command.SSHUser)
 	if err != nil {
 		return nil, err
 	}
