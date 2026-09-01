@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"tug.sh/pkg/protocol"
@@ -205,4 +206,110 @@ func normalizeContainerStatus(raw string) string {
 		return "running"
 	}
 	return "stopped"
+}
+
+// CollectContainerStats executes docker stats --no-stream and returns parsed
+// metrics for all running containers.
+func (manager *Manager) CollectContainerStats(ctx context.Context) ([]protocol.ContainerMetric, error) {
+	raw, err := output(
+		ctx,
+		"stats",
+		"--no-stream",
+		"--format",
+		"{{.ID}}\t{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}\t{{.BlockIO}}",
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	lines := strings.Split(strings.TrimSpace(raw), "\n")
+	metrics := make([]protocol.ContainerMetric, 0, len(lines))
+
+	for _, line := range lines {
+		line = strings.TrimRight(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		parts := strings.Split(line, "\t")
+		if len(parts) < 6 {
+			continue
+		}
+
+		containerID := strings.TrimSpace(parts[0])
+		name := strings.TrimSpace(parts[1])
+		cpuRaw := strings.TrimSuffix(strings.TrimSpace(parts[2]), "%")
+		cpuVal, _ := strconv.ParseFloat(cpuRaw, 64)
+
+		memUsed, memTotal := parseTwoSlashValues(parts[3])
+		netRx, netTx := parseTwoSlashValues(parts[4])
+		blockRead, blockWrite := parseTwoSlashValues(parts[5])
+
+		metrics = append(metrics, protocol.ContainerMetric{
+			ID:              containerID,
+			Name:            name,
+			Status:          "running",
+			CPUPercent:      cpuVal,
+			RAMUsedBytes:    memUsed,
+			RAMTotalBytes:   memTotal,
+			NetworkRxBytes:  netRx,
+			NetworkTxBytes:  netTx,
+			BlockReadBytes:  blockRead,
+			BlockWriteBytes: blockWrite,
+		})
+	}
+
+	return metrics, nil
+}
+
+func parseTwoSlashValues(raw string) (uint64, uint64) {
+	parts := strings.Split(raw, "/")
+	if len(parts) < 2 {
+		return 0, 0
+	}
+	return parseByteSize(parts[0]), parseByteSize(parts[1])
+}
+
+// parseByteSize parses strings like "45.2MiB", "1.2GB", "500kB", "1024B" into bytes.
+func parseByteSize(raw string) uint64 {
+	s := strings.TrimSpace(raw)
+	if s == "" || s == "0" || s == "--" {
+		return 0
+	}
+
+	unitIdx := -1
+	for i, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			unitIdx = i
+			break
+		}
+	}
+
+	if unitIdx == -1 {
+		val, _ := strconv.ParseUint(s, 10, 64)
+		return val
+	}
+
+	numStr := strings.TrimSpace(s[:unitIdx])
+	unit := strings.ToUpper(strings.TrimSpace(s[unitIdx:]))
+
+	num, err := strconv.ParseFloat(numStr, 64)
+	if err != nil {
+		return 0
+	}
+
+	multiplier := float64(1)
+	switch unit {
+	case "B":
+		multiplier = 1
+	case "KB", "KIB", "K":
+		multiplier = 1024
+	case "MB", "MIB", "M":
+		multiplier = 1024 * 1024
+	case "GB", "GIB", "G":
+		multiplier = 1024 * 1024 * 1024
+	case "TB", "TIB", "T":
+		multiplier = 1024 * 1024 * 1024 * 1024
+	}
+
+	return uint64(num * multiplier)
 }

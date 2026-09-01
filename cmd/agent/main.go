@@ -112,7 +112,7 @@ func main() {
 // cliCommand is one command a user runs from the shell. Failures are reported
 // the same way for all of them, so a handler only returns an error.
 type cliCommand struct {
-	run     func(cfg config.Config, args []string) error
+	run     func(cfg config.Config, args []string) error 
 	success string
 }
 

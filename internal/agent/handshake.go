@@ -106,14 +106,19 @@ func (runtime *Runtime) sendHeartbeat(conn *websocket.Conn) error {
 	ramUsed, ramTotal, _, _ := system.RAMUsage()
 	diskFree, diskTotal, _ := system.DiskStats("/")
 
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	containerStats, _ := runtime.dockerManager.CollectContainerStats(ctx)
+
 	heartbeat := protocol.Heartbeat{
-		AgentVersion:   strings.TrimSpace(runtime.config.AgentVersion),
-		SentAtUnix:     time.Now().Unix(),
-		CPUPercent:     cpuPct,
-		RAMUsedBytes:   ramUsed,
-		RAMTotalBytes:  ramTotal,
-		DiskFreeBytes:  diskFree,
-		DiskTotalBytes: diskTotal,
+		AgentVersion:     strings.TrimSpace(runtime.config.AgentVersion),
+		SentAtUnix:       time.Now().Unix(),
+		CPUPercent:       cpuPct,
+		RAMUsedBytes:     ramUsed,
+		RAMTotalBytes:    ramTotal,
+		DiskFreeBytes:    diskFree,
+		DiskTotalBytes:   diskTotal,
+		ContainerMetrics: containerStats,
 	}
 	if err := runtime.emitSignal(conn, protocol.EntityRuntime, protocol.ActionHeartbeat, heartbeat); err != nil {
 		return fmt.Errorf("cannot write heartbeat: %w", err)

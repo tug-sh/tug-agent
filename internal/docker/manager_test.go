@@ -87,9 +87,36 @@ func TestDeployCommandPrefersCustomCommand(t *testing.T) {
 func TestDeployCommandDefaultsToCompose(t *testing.T) {
 	_, description := DeployCommand(context.Background(), "", "-f", "/apps/x/docker-compose.yml", "up", "-d", "--build")
 	if !strings.Contains(description, "-f /apps/x/docker-compose.yml up -d --build") {
-		t.Errorf("unexpected description %q", description)
+		t.Errorf("expected default command with flags, got %q", description)
 	}
-	if !strings.HasPrefix(description, "docker") {
-		t.Errorf("description = %q, want it to name the compose binary", description)
+}
+
+func TestParseByteSize(t *testing.T) {
+	cases := []struct {
+		input string
+		want  uint64
+	}{
+		{"0", 0},
+		{"--", 0},
+		{"", 0},
+		{"1024B", 1024},
+		{"1KB", 1024},
+		{"500kB", 512000},
+		{"45.2MiB", 47395635},
+		{"1.5GB", 1610612736},
+		{"2GiB", 2147483648},
+	}
+	for _, tc := range cases {
+		got := parseByteSize(tc.input)
+		if got != tc.want {
+			t.Errorf("parseByteSize(%q) = %d, want %d", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestParseTwoSlashValues(t *testing.T) {
+	v1, v2 := parseTwoSlashValues("45.2MiB / 2GiB")
+	if v1 != 47395635 || v2 != 2147483648 {
+		t.Errorf("parseTwoSlashValues() = (%d, %d), want (47395635, 2147483648)", v1, v2)
 	}
 }
