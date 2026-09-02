@@ -3,7 +3,9 @@ package docker
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/user"
@@ -355,13 +357,59 @@ func (manager *Manager) MigrateContainerToTarget(
 		targetSSHPort = 22
 	}
 
-	// 1. Get container info (name, image, status)
+	// 1. Get container info (name, image, ports, restart policy, labels)
 	note("Inspecting container %s...", containerID)
-	name, err := output(ctx, "inspect", "--format={{.Name}}", containerID)
-	if err != nil {
-		return fmt.Errorf("failed to inspect container name: %w", err)
+	var runFlags []string
+	containerName := containerID
+
+	if inspectJSON, err := output(ctx, "inspect", containerID); err == nil {
+		var inspectList []struct {
+			Name   string `json:"Name"`
+			Config struct {
+				Labels map[string]string `json:"Labels"`
+			} `json:"Config"`
+			HostConfig struct {
+				RestartPolicy struct {
+					Name string `json:"Name"`
+				} `json:"RestartPolicy"`
+				PortBindings map[string][]struct {
+					HostIP   string `json:"HostIp"`
+					HostPort string `json:"HostPort"`
+				} `json:"PortBindings"`
+				NetworkMode string `json:"NetworkMode"`
+			} `json:"HostConfig"`
+		}
+		if err := json.Unmarshal([]byte(inspectJSON), &inspectList); err == nil && len(inspectList) > 0 {
+			info := inspectList[0]
+			containerName = strings.TrimPrefix(strings.TrimSpace(info.Name), "/")
+
+			for containerPort, bindings := range info.HostConfig.PortBindings {
+				for _, b := range bindings {
+					if b.HostPort != "" {
+						if b.HostIP != "" && b.HostIP != "0.0.0.0" {
+							runFlags = append(runFlags, fmt.Sprintf("-p %s:%s:%s", b.HostIP, b.HostPort, containerPort))
+						} else {
+							runFlags = append(runFlags, fmt.Sprintf("-p %s:%s", b.HostPort, containerPort))
+						}
+					}
+				}
+			}
+
+			if r := info.HostConfig.RestartPolicy.Name; r != "" && r != "no" {
+				runFlags = append(runFlags, fmt.Sprintf("--restart %s", r))
+			}
+
+			for k, v := range info.Config.Labels {
+				runFlags = append(runFlags, fmt.Sprintf("--label %s=%q", k, v))
+			}
+		}
+	} else {
+		name, err := output(ctx, "inspect", "--format={{.Name}}", containerID)
+		if err != nil {
+			return fmt.Errorf("failed to inspect container name: %w", err)
+		}
+		containerName = strings.TrimPrefix(strings.TrimSpace(name), "/")
 	}
-	containerName := strings.TrimPrefix(strings.TrimSpace(name), "/")
 
 	// 2. Stop container on source
 	note("Stopping container %s on source...", containerName)
@@ -377,6 +425,14 @@ func (manager *Manager) MigrateContainerToTarget(
 		_, _ = combined(ctx, "rmi", tempImageTag)
 	}()
 
+	var imageSizeBytes int64
+	if szStr, err := output(ctx, "image", "inspect", "--format={{.Size}}", tempImageTag); err == nil {
+		_, _ = fmt.Sscanf(strings.TrimSpace(szStr), "%d", &imageSizeBytes)
+	}
+	if imageSizeBytes > 0 {
+		note("Committed image size: %.1f MB. Initiating SSH stream...", float64(imageSizeBytes)/(1024*1024))
+	}
+
 	// 4. Write ephemeral private key to temp file
 	keyPath := fmt.Sprintf("/tmp/tug_mig_key_%s", containerID)
 	if err := os.WriteFile(keyPath, []byte(ephemeralPrivateKey+"\n"), 0600); err != nil {
@@ -386,6 +442,27 @@ func (manager *Manager) MigrateContainerToTarget(
 
 	// 5. Stream image to target VPS and run it
 	note("Streaming image to %s:%d and restoring...", targetIP, targetSSHPort)
+	runFlagsStr := ""
+	if len(runFlags) > 0 {
+		runFlagsStr = " " + strings.Join(runFlags, " ")
+	}
+
+	remoteRunCmd := fmt.Sprintf(
+		`docker load && `+
+			`(docker rm -f %s 2>/dev/null || true) && `+
+			`CID=$(docker run -d --name %s%s %s) && `+
+			`echo "RESTORED_CID:$CID" && `+
+			`sleep 2 && `+
+			`STATUS=$(docker inspect --format='{{.State.Status}}' "$CID" 2>/dev/null || echo "unknown") && `+
+			`echo "RESTORED_STATUS:$STATUS" && `+
+			`if [ "$STATUS" != "running" ]; then `+
+			`echo "CONTAINER_ERROR: container failed to start (status: $STATUS)"; `+
+			`docker logs --tail 25 "$CID" 2>&1; `+
+			`exit 1; `+
+			`fi`,
+		containerName, containerName, runFlagsStr, tempImageTag,
+	)
+
 	sshArgs := []string{
 		"-p", fmt.Sprintf("%d", targetSSHPort),
 		"-i", keyPath,
@@ -393,28 +470,31 @@ func (manager *Manager) MigrateContainerToTarget(
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "ConnectTimeout=15",
 		fmt.Sprintf("%s@%s", sshUser, targetIP),
-		fmt.Sprintf("docker load && docker run -d --name %s %s", containerName, tempImageTag),
+		remoteRunCmd,
 	}
 
 	cmdSSH := execCommandContext(ctx, "ssh", sshArgs...)
 	cmdSave := execCommandContext(ctx, "docker", "save", tempImageTag)
 
-	// The remote side speaks over stdout/stderr: "docker load" prints the image
-	// it read, "docker run" prints the new id, and any failure prints why. All
-	// of it is captured so a broken migration is diagnosable from the logs
-	// rather than a bare "exit status 1".
 	var sshOut bytes.Buffer
 	var saveErr bytes.Buffer
 	cmdSSH.Stdout = &sshOut
 	cmdSSH.Stderr = &sshOut
 	cmdSave.Stderr = &saveErr
 
-	// Pipe docker save directly to ssh
+	// Pipe docker save directly to ssh with live progress logging
 	pipeReader, pipeWriter, err := os.Pipe()
 	if err != nil {
 		return fmt.Errorf("failed to create pipe: %w", err)
 	}
-	cmdSave.Stdout = pipeWriter
+
+	pw := &progressWriter{
+		target:  pipeWriter,
+		total:   imageSizeBytes,
+		lastLog: time.Now(),
+		report:  note,
+	}
+	cmdSave.Stdout = pw
 	cmdSSH.Stdin = pipeReader
 
 	if err := cmdSave.Start(); err != nil {
@@ -429,9 +509,7 @@ func (manager *Manager) MigrateContainerToTarget(
 		return fmt.Errorf("failed to start ssh transfer: %w", err)
 	}
 
-	// Wait for save to finish, then close the writer so ssh reads EOF. The save
-	// error is kept rather than dropped: a save that dies mid-stream leaves ssh
-	// to fail on truncated input, and the real cause is on this side.
+	// Wait for save to finish, then close the writer so ssh reads EOF
 	saveDone := make(chan error, 1)
 	go func() {
 		e := cmdSave.Wait()
@@ -440,16 +518,9 @@ func (manager *Manager) MigrateContainerToTarget(
 	}()
 
 	sshErr := cmdSSH.Wait()
-	// ssh is done with its stdin; dropping our end unblocks a save still trying
-	// to write into a pipe nobody reads, so it fails fast instead of hanging.
 	pipeReader.Close()
 	saveWaitErr := <-saveDone
 
-	// ssh is checked first on purpose. When the remote side is unreachable or
-	// refuses the command, ssh dies early and closes the pipe, and docker save
-	// then reports a "broken pipe" that is only a symptom. Surfacing the save
-	// error first is what hid the real reason (a bad target host, a refused
-	// connection, no docker on the far end) behind "broken pipe".
 	if sshErr != nil {
 		detail := strings.TrimSpace(sshOut.String())
 		if detail == "" {
@@ -460,8 +531,29 @@ func (manager *Manager) MigrateContainerToTarget(
 	if saveWaitErr != nil {
 		return fmt.Errorf("docker save failed: %w\n%s", saveWaitErr, strings.TrimSpace(saveErr.String()))
 	}
-	if out := strings.TrimSpace(sshOut.String()); out != "" {
-		note("%s", out)
+
+	outStr := strings.TrimSpace(sshOut.String())
+	var restoredCID, restoredStatus string
+	for _, l := range strings.Split(outStr, "\n") {
+		l = strings.TrimSpace(l)
+		if strings.HasPrefix(l, "RESTORED_CID:") {
+			restoredCID = strings.TrimPrefix(l, "RESTORED_CID:")
+		} else if strings.HasPrefix(l, "RESTORED_STATUS:") {
+			restoredStatus = strings.TrimPrefix(l, "RESTORED_STATUS:")
+		} else if strings.HasPrefix(l, "Loaded image:") {
+			note("%s", l)
+		}
+	}
+
+	if restoredCID != "" {
+		shortCID := restoredCID
+		if len(shortCID) > 12 {
+			shortCID = shortCID[:12]
+		}
+		if restoredStatus == "" {
+			restoredStatus = "running"
+		}
+		note("✓ Container %s successfully restored & running on %s (ID: %s, Status: %s).", containerName, targetIP, shortCID, restoredStatus)
 	}
 
 	// 8. If move mode, remove source container
@@ -471,4 +563,41 @@ func (manager *Manager) MigrateContainerToTarget(
 	}
 
 	return nil
+}
+
+type progressWriter struct {
+	target    io.Writer
+	total     int64
+	current   int64
+	lastLog   time.Time
+	lastBytes int64
+	report    func(string, ...any)
+}
+
+func (pw *progressWriter) Write(p []byte) (int, error) {
+	n, err := pw.target.Write(p)
+	pw.current += int64(n)
+	now := time.Now()
+	if pw.report != nil && (pw.lastLog.IsZero() || now.Sub(pw.lastLog) >= 2*time.Second) {
+		elapsed := now.Sub(pw.lastLog).Seconds()
+		if elapsed <= 0 {
+			elapsed = 1
+		}
+		speedMB := float64(pw.current-pw.lastBytes) / (1024 * 1024) / elapsed
+		pw.lastLog = now
+		pw.lastBytes = pw.current
+
+		curMB := float64(pw.current) / (1024 * 1024)
+		if pw.total > 0 {
+			totalMB := float64(pw.total) / (1024 * 1024)
+			pct := float64(pw.current) / float64(pw.total) * 100
+			if pct > 100 {
+				pct = 100
+			}
+			pw.report("Transferring image: %.1f MB / %.1f MB (%.0f%%) at %.1f MB/s...", curMB, totalMB, pct, speedMB)
+		} else {
+			pw.report("Transferring image: %.1f MB transferred at %.1f MB/s...", curMB, speedMB)
+		}
+	}
+	return n, err
 }
