@@ -153,6 +153,23 @@ func (runtime *Runtime) publishAllContainerStatuses(ctx context.Context, conn *w
 		runtime.log.Debug("container delta list error: %v", err)
 		return
 	}
+
+	hasNew := false
+	runtime.containerDeltaStateMu.Lock()
+	for _, item := range containers {
+		id := strings.TrimSpace(item.ID)
+		if _, exists := runtime.lastContainerDeltaState[id]; !exists {
+			hasNew = true
+			break
+		}
+	}
+	runtime.containerDeltaStateMu.Unlock()
+
+	if hasNew {
+		_ = runtime.sendSnapshot()
+		return
+	}
+
 	activeIDs := make(map[string]struct{}, len(containers))
 	for _, item := range containers {
 		activeIDs[strings.TrimSpace(item.ID)] = struct{}{}
