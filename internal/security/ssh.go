@@ -17,7 +17,7 @@ type SSHHardeningOptions struct {
 }
 
 // ApplySSHHardening writes standard hardening directives to /etc/ssh/sshd_config.d/99-tug.conf
-// or /etc/ssh/sshd_config and validates configuration with sshd -t before reloading.
+// and validates configuration with sshd -t before reloading.
 func ApplySSHHardening(ctx context.Context, opts SSHHardeningOptions) error {
 	var lines []string
 	lines = append(lines, "# Managed by tug.sh TugShield")
@@ -25,7 +25,8 @@ func ApplySSHHardening(ctx context.Context, opts SSHHardeningOptions) error {
 	if opts.DisableRootLogin {
 		lines = append(lines, "PermitRootLogin no")
 	} else {
-		lines = append(lines, "PermitRootLogin yes")
+		// When not disabled, allow key authentication for root
+		lines = append(lines, "PermitRootLogin prohibit-password")
 	}
 
 	if opts.DisablePasswordAuth {
@@ -41,16 +42,20 @@ func ApplySSHHardening(ctx context.Context, opts SSHHardeningOptions) error {
 
 	content := strings.Join(lines, "\n") + "\n"
 
-	// Check if /etc/ssh/sshd_config.d exists
 	configDir := "/etc/ssh/sshd_config.d"
-	targetFile := "/etc/ssh/sshd_config.d/99-tug.conf"
-	if fi, err := os.Stat(configDir); err == nil && fi.IsDir() {
-		if err := os.WriteFile(targetFile, []byte(content), 0644); err != nil {
-			return fmt.Errorf("failed to write %s: %w", targetFile, err)
+	_ = os.MkdirAll(configDir, 0755)
+
+	// Ensure /etc/ssh/sshd_config includes the config directory if present
+	if mainConfig, err := os.ReadFile("/etc/ssh/sshd_config"); err == nil {
+		if !strings.Contains(string(mainConfig), "sshd_config.d") {
+			newMain := "Include /etc/ssh/sshd_config.d/*.conf\n" + string(mainConfig)
+			_ = os.WriteFile("/etc/ssh/sshd_config", []byte(newMain), 0644)
 		}
-	} else {
-		// Fallback: append/update directly in /etc/ssh/sshd_config if possible
-		return nil
+	}
+
+	targetFile := "/etc/ssh/sshd_config.d/99-tug.conf"
+	if err := os.WriteFile(targetFile, []byte(content), 0644); err != nil {
+		return fmt.Errorf("failed to write %s: %w", targetFile, err)
 	}
 
 	// Validate sshd configuration
@@ -69,6 +74,15 @@ func ApplySSHHardening(ctx context.Context, opts SSHHardeningOptions) error {
 	}
 
 	return nil
+}
+
+func ApplyFail2ban(ctx context.Context, enable bool) error {
+	if enable {
+		_ = exec.CommandContext(ctx, "systemctl", "enable", "fail2ban").Run()
+		return exec.CommandContext(ctx, "systemctl", "start", "fail2ban").Run()
+	}
+	_ = exec.CommandContext(ctx, "systemctl", "stop", "fail2ban").Run()
+	return exec.CommandContext(ctx, "systemctl", "disable", "fail2ban").Run()
 }
 
 // InspectSecurityStatus probes the host system for actual, active SSH, Fail2ban, and Firewall states.

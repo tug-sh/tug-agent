@@ -44,3 +44,31 @@ func ApplyFirewallRule(ctx context.Context, rule FirewallRule) error {
 
 	return nil
 }
+
+// DeleteFirewallRule deletes a ufw rule from the Linux VPS.
+func DeleteFirewallRule(ctx context.Context, rule FirewallRule) error {
+	port := strings.TrimSpace(rule.Port)
+	if port == "" {
+		return fmt.Errorf("port is required")
+	}
+
+	action := strings.ToLower(strings.TrimSpace(rule.Action))
+	if action != "allow" && action != "deny" && action != "limit" {
+		action = "allow"
+	}
+
+	protocol := strings.ToLower(strings.TrimSpace(rule.Protocol))
+	if protocol == "" || protocol == "both" {
+		protocol = "tcp"
+	}
+
+	args := []string{"delete", action}
+	if rule.SourceIP != "" && rule.SourceIP != "0.0.0.0/0" {
+		args = append(args, "from", strings.TrimSpace(rule.SourceIP), "to", "any")
+	}
+	args = append(args, "port", port, "proto", protocol)
+
+	cmd := exec.CommandContext(ctx, "ufw", args...)
+	_ = cmd.Run()
+	return nil
+}

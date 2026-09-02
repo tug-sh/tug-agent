@@ -116,8 +116,11 @@ var commandHandlers = map[string]commandHandler{
 	protocol.CmdRouterRouteList:      (*Runtime).handleListTugRouterRoutes,
 	protocol.CmdRouterRouteRemove:    (*Runtime).handleRemoveTugRouterRoute,
 	protocol.CmdCheckHostPath:        (*Runtime).handleCheckHostPath,
-	protocol.CmdContainerMounts:      (*Runtime).handleContainerMounts,
-	protocol.CmdContainerInspect:     (*Runtime).handleContainerInspect,
+	protocol.CmdContainerMounts:        (*Runtime).handleContainerMounts,
+	protocol.CmdContainerInspect:       (*Runtime).handleContainerInspect,
+	protocol.CmdApplySecurityHardening: (*Runtime).handleApplySecurityHardening,
+	protocol.CmdApplyFirewallRule:      (*Runtime).handleApplyFirewallRule,
+	protocol.CmdDeleteFirewallRule:     (*Runtime).handleDeleteFirewallRule,
 }
 
 func (runtime *Runtime) executeCommand(

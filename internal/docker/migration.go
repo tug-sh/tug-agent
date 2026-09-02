@@ -63,19 +63,40 @@ func migrationTargetUser(preferredUser string) (username string, sshDir string, 
 	// If running as root, check if root SSH login is allowed
 	rootAllowed := isRootSSHAllowed()
 	if !rootAllowed {
-		// If root login is explicitly disabled (PermitRootLogin no), find a standard sudo/docker user
-		commonUsers := []string{"ubuntu", "debian", "centos", "admin", "tug", "ec2-user"}
-		for _, name := range commonUsers {
-			if u, err := user.Lookup(name); err == nil {
-				var uID, gID int
-				_, _ = fmt.Sscanf(u.Uid, "%d", &uID)
-				_, _ = fmt.Sscanf(u.Gid, "%d", &gID)
-				return u.Username, filepath.Join(u.HomeDir, ".ssh"), uID, gID
-			}
+		if uName, uSSHDir, uID, gID := findStandardSudoUser(); uName != "" {
+			return uName, uSSHDir, uID, gID
 		}
 	}
 
 	return "root", "/root/.ssh", 0, 0
+}
+
+func findStandardSudoUser() (string, string, int, int) {
+	commonUsers := []string{"ubuntu", "debian", "centos", "admin", "tug", "ec2-user", "fedora", "alma", "rocky"}
+	for _, name := range commonUsers {
+		if u, err := user.Lookup(name); err == nil {
+			var uID, gID int
+			_, _ = fmt.Sscanf(u.Uid, "%d", &uID)
+			_, _ = fmt.Sscanf(u.Gid, "%d", &gID)
+			return u.Username, filepath.Join(u.HomeDir, ".ssh"), uID, gID
+		}
+	}
+
+	// Scan /home for user directories
+	if entries, err := os.ReadDir("/home"); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
+				if u, err := user.Lookup(entry.Name()); err == nil {
+					var uID, gID int
+					_, _ = fmt.Sscanf(u.Uid, "%d", &uID)
+					_, _ = fmt.Sscanf(u.Gid, "%d", &gID)
+					return u.Username, filepath.Join(u.HomeDir, ".ssh"), uID, gID
+				}
+			}
+		}
+	}
+
+	return "", "", -1, -1
 }
 
 func isRootSSHAllowed() bool {
@@ -89,6 +110,21 @@ func isRootSSHAllowed() bool {
 			}
 		}
 	}
+
+	// Fallback to checking config files directly
+	if data, err := os.ReadFile("/etc/ssh/sshd_config"); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "#") {
+				continue
+			}
+			parts := strings.Fields(line)
+			if len(parts) >= 2 && strings.EqualFold(parts[0], "PermitRootLogin") {
+				return strings.ToLower(parts[1]) != "no"
+			}
+		}
+	}
+
 	return true
 }
 
