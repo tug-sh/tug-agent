@@ -18,13 +18,15 @@ set -eu
 
 systemctl stop tug-agent.service || true
 systemctl disable tug-agent.service || true
+rm -f /etc/systemd/system/tug-agent.service
+systemctl daemon-reload || true
 rm -rf /etc/tug /var/lib/tug
 
 if [ "%s" = "clean" ]; then
   docker ps -aq | xargs -r docker rm -f
 fi
 
-rm -f /usr/local/bin/tug-agent /usr/local/bin/tug /usr/local/bin/tug.next
+rm -f /usr/local/bin/tug-agent /usr/local/bin/tug /usr/local/bin/tug-agent.next /usr/local/bin/tug.next
 rm -f "$0"
 `, mode)
 

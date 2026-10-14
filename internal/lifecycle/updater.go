@@ -104,20 +104,28 @@ func (updater *Updater) SafeUpdateWithProgress(ctx context.Context, binaryURL st
 		}
 	}
 
-	payload, err := io.ReadAll(reader)
+	file, err := os.OpenFile(nextBinary, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
 	if err != nil {
-		return fmt.Errorf("failed to read binary payload: %w", err)
+		return fmt.Errorf("failed to create temporary binary: %w", err)
 	}
-	if len(payload) < 1000 {
-		return fmt.Errorf("invalid binary size (%d bytes)", len(payload))
+
+	written, copyErr := io.Copy(file, reader)
+	closeErr := file.Close()
+	if copyErr != nil {
+		_ = os.Remove(nextBinary)
+		return fmt.Errorf("failed to read binary payload: %w", copyErr)
+	}
+	if closeErr != nil {
+		_ = os.Remove(nextBinary)
+		return fmt.Errorf("failed to save temporary binary: %w", closeErr)
+	}
+	if written < 1000 {
+		_ = os.Remove(nextBinary)
+		return fmt.Errorf("invalid binary size (%d bytes)", written)
 	}
 
 	if onProgress != nil && totalBytes > 0 {
-		onProgress(uint64(len(payload)), uint64(len(payload)), 100)
-	}
-
-	if err := os.WriteFile(nextBinary, payload, 0o755); err != nil {
-		return fmt.Errorf("failed to write temporary binary: %w", err)
+		onProgress(uint64(written), uint64(written), 100)
 	}
 
 	testCtx, cancelTest := context.WithTimeout(context.Background(), 30*time.Second)
