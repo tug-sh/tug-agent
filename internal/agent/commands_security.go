@@ -18,7 +18,9 @@ func (runtime *Runtime) handleApplySecurityHardening(request commandRequest) ([]
 	}
 
 	if cmd.Fail2banEnabled {
-		_ = security.ApplyFail2ban(request.ctx, true)
+		if err := security.ApplyFail2ban(request.ctx, true); err != nil {
+			return nil, fmt.Errorf("failed to configure fail2ban: %w", err)
+		}
 	} else {
 		_ = security.ApplyFail2ban(request.ctx, false)
 	}

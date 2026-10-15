@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"tug.sh/pkg/protocol"
@@ -76,11 +77,96 @@ func ApplySSHHardening(ctx context.Context, opts SSHHardeningOptions) error {
 	return nil
 }
 
+func installPackage(ctx context.Context, pkg string) error {
+	// Try apt-get (Debian/Ubuntu)
+	if _, err := exec.LookPath("apt-get"); err == nil {
+		_ = exec.CommandContext(ctx, "apt-get", "update", "-qq").Run()
+		cmd := exec.CommandContext(ctx, "apt-get", "install", "-y", "-qq", pkg)
+		cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("apt-get install %s: %s: %w", pkg, strings.TrimSpace(string(out)), err)
+		}
+		return nil
+	}
+
+	// Try dnf (Fedora, RHEL 8+, Rocky, AlmaLinux)
+	if _, err := exec.LookPath("dnf"); err == nil {
+		_ = exec.CommandContext(ctx, "dnf", "install", "-y", "epel-release").Run()
+		cmd := exec.CommandContext(ctx, "dnf", "install", "-y", pkg)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("dnf install %s: %s: %w", pkg, strings.TrimSpace(string(out)), err)
+		}
+		return nil
+	}
+
+	// Try yum (CentOS, RHEL 7)
+	if _, err := exec.LookPath("yum"); err == nil {
+		_ = exec.CommandContext(ctx, "yum", "install", "-y", "epel-release").Run()
+		cmd := exec.CommandContext(ctx, "yum", "install", "-y", pkg)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("yum install %s: %s: %w", pkg, strings.TrimSpace(string(out)), err)
+		}
+		return nil
+	}
+
+	// Try apk (Alpine Linux)
+	if _, err := exec.LookPath("apk"); err == nil {
+		cmd := exec.CommandContext(ctx, "apk", "add", pkg)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("apk add %s: %s: %w", pkg, strings.TrimSpace(string(out)), err)
+		}
+		return nil
+	}
+
+	// Try pacman (Arch Linux)
+	if _, err := exec.LookPath("pacman"); err == nil {
+		cmd := exec.CommandContext(ctx, "pacman", "-Sy", "--noconfirm", pkg)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("pacman install %s: %s: %w", pkg, strings.TrimSpace(string(out)), err)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("no supported package manager found to install %s", pkg)
+}
+
 func ApplyFail2ban(ctx context.Context, enable bool) error {
 	if enable {
+		// 1. If fail2ban is not installed on the host, install it automatically
+		if _, err := exec.LookPath("fail2ban-client"); err != nil {
+			if err := installPackage(ctx, "fail2ban"); err != nil {
+				return fmt.Errorf("fail2ban is not installed and auto-installation failed: %w", err)
+			}
+		}
+
+		// 2. Ensure basic jail configuration exists so fail2ban starts properly
+		jailDir := "/etc/fail2ban/jail.d"
+		if err := os.MkdirAll(jailDir, 0755); err == nil {
+			jailFile := filepath.Join(jailDir, "tug-sshd.local")
+			if _, err := os.Stat(jailFile); os.IsNotExist(err) {
+				content := "[sshd]\nenabled = true\nmaxretry = 5\nfindtime = 600\nbantime = 3600\n"
+				_ = os.WriteFile(jailFile, []byte(content), 0644)
+			}
+		}
+
+		// 3. Enable and start or restart fail2ban
 		_ = exec.CommandContext(ctx, "systemctl", "enable", "fail2ban").Run()
-		return exec.CommandContext(ctx, "systemctl", "start", "fail2ban").Run()
+		restartCmd := exec.CommandContext(ctx, "systemctl", "restart", "fail2ban")
+		if _, err := restartCmd.CombinedOutput(); err != nil {
+			startCmd := exec.CommandContext(ctx, "systemctl", "start", "fail2ban")
+			if startOut, startErr := startCmd.CombinedOutput(); startErr != nil {
+				return fmt.Errorf("failed to start fail2ban service: %s: %w", strings.TrimSpace(string(startOut)), startErr)
+			}
+		}
+
+		// 4. Verify it is actually running
+		if err := exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", "fail2ban").Run(); err != nil {
+			return fmt.Errorf("fail2ban service was started but is not active (check journalctl -u fail2ban)")
+		}
+
+		return nil
 	}
+
 	_ = exec.CommandContext(ctx, "systemctl", "stop", "fail2ban").Run()
 	return exec.CommandContext(ctx, "systemctl", "disable", "fail2ban").Run()
 }
