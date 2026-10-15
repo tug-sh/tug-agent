@@ -130,10 +130,34 @@ func installPackage(ctx context.Context, pkg string) error {
 	return fmt.Errorf("no supported package manager found to install %s", pkg)
 }
 
+// IsFail2banInstalled checks if fail2ban binaries or systemd unit exist on the host.
+func IsFail2banInstalled() bool {
+	if _, err := exec.LookPath("fail2ban-client"); err == nil {
+		return true
+	}
+	if _, err := exec.LookPath("fail2ban-server"); err == nil {
+		return true
+	}
+	for _, p := range []string{"/usr/bin/fail2ban-client", "/usr/sbin/fail2ban-client", "/usr/local/bin/fail2ban-client"} {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	if err := exec.Command("systemctl", "cat", "fail2ban.service").Run(); err == nil {
+		return true
+	}
+	return false
+}
+
+// IsFail2banRunning checks if the fail2ban service is currently active.
+func IsFail2banRunning(ctx context.Context) bool {
+	return exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", "fail2ban").Run() == nil
+}
+
 func ApplyFail2ban(ctx context.Context, enable bool) error {
 	if enable {
-		// 1. If fail2ban is not installed on the host, install it automatically
-		if _, err := exec.LookPath("fail2ban-client"); err != nil {
+		// 1. If fail2ban is not installed on the host, install it
+		if !IsFail2banInstalled() {
 			if err := installPackage(ctx, "fail2ban"); err != nil {
 				return fmt.Errorf("fail2ban is not installed and auto-installation failed: %w", err)
 			}
@@ -160,7 +184,7 @@ func ApplyFail2ban(ctx context.Context, enable bool) error {
 		}
 
 		// 4. Verify it is actually running
-		if err := exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", "fail2ban").Run(); err != nil {
+		if !IsFail2banRunning(ctx) {
 			return fmt.Errorf("fail2ban service was started but is not active (check journalctl -u fail2ban)")
 		}
 
@@ -216,8 +240,10 @@ func InspectSecurityStatus(ctx context.Context) *protocol.SecurityAuditStatus {
 	}
 
 	// 3. Check fail2ban service
-	if err := exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", "fail2ban").Run(); err == nil {
+	status.Fail2banInstalled = IsFail2banInstalled()
+	if IsFail2banRunning(ctx) {
 		status.Fail2banRunning = true
+		status.Fail2banInstalled = true
 	}
 
 	// 4. Check UFW status

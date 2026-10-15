@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 
+	"tug.sh/pkg/protocol"
 	"tug.sh/services/agent/internal/security"
 )
 
@@ -54,4 +55,25 @@ func (runtime *Runtime) handleDeleteFirewallRule(request commandRequest) ([]stri
 		return nil, fmt.Errorf("failed to delete firewall rule: %w", err)
 	}
 	return []string{fmt.Sprintf("Firewall rule %s %s/%s deleted.", cmd.FirewallAction, cmd.FirewallPort, cmd.FirewallProtocol)}, nil
+}
+
+func (runtime *Runtime) handleCheckFail2ban(request commandRequest) ([]string, error) {
+	installed := security.IsFail2banInstalled()
+	running := security.IsFail2banRunning(request.ctx)
+	request.setPayload(protocol.Fail2banStatus{
+		Installed: installed,
+		Running:   running,
+	})
+	return []string{fmt.Sprintf("Fail2ban status: installed=%v, running=%v", installed, running)}, nil
+}
+
+func (runtime *Runtime) handleInstallFail2ban(request commandRequest) ([]string, error) {
+	if err := security.ApplyFail2ban(request.ctx, true); err != nil {
+		return nil, fmt.Errorf("failed to install and enable fail2ban: %w", err)
+	}
+	request.setPayload(protocol.Fail2banStatus{
+		Installed: true,
+		Running:   true,
+	})
+	return []string{"Fail2ban installed and enabled successfully."}, nil
 }
