@@ -101,7 +101,11 @@ func (router *Router) DeleteRoute(ctx context.Context, domain string) ([]string,
 func (router *Router) ListRoutes(ctx context.Context) ([]Route, error) {
 	containerName, resolveErr := router.ResolveContainerName(ctx)
 	if resolveErr != nil {
-		return nil, ErrNotInstalled
+		routes, err := router.loadRoutes("")
+		if err != nil {
+			return []Route{}, nil
+		}
+		return routes, nil
 	}
 	return router.loadRoutes(containerName)
 }
