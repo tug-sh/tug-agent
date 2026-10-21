@@ -1,12 +1,15 @@
 package docker
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"tug.sh/services/agent/internal/logging"
 	"tug.sh/services/agent/internal/sandbox"
@@ -49,13 +52,18 @@ func DeployCommand(ctx context.Context, customCommand string, composeArgs ...str
 	return cmd, composeName + " " + strings.Join(composeArgs, " ")
 }
 
-// RedeployContainer recreates the compose project a container belongs to,
-// reading the compose labels Docker itself stamps on every compose-managed
-// container. This makes a redeploy possible without any server-side record of
-// how the container was created: the machine is the source of truth.
+
 func (manager *Manager) RedeployContainer(ctx context.Context, containerID string) ([]string, error) {
+	return manager.RedeployContainerWithReport(ctx, containerID, nil)
+}
+
+func (manager *Manager) RedeployContainerWithReport(ctx context.Context, containerID string, report func([]string)) ([]string, error) {
 	containerID = strings.TrimSpace(containerID)
-	transcript := logging.NewTranscript(fmt.Sprintf("Preparing redeploy for container %s...", containerID))
+	startMsg := fmt.Sprintf("Preparing redeploy for container %s...", containerID)
+	transcript := logging.NewTranscript(startMsg)
+	if report != nil {
+		report([]string{startMsg})
+	}
 	if containerID == "" {
 		return transcript.Fail("container_id is required")
 	}
@@ -97,20 +105,89 @@ func (manager *Manager) RedeployContainer(ctx context.Context, containerID strin
 	}
 	args = append(args, "up", "-d")
 
-	transcript.Addf("Redeploying compose project %s in %s...", project, workingDir)
+	redeployMsg := fmt.Sprintf("Redeploying compose project %s in %s...", project, workingDir)
+	transcript.Add(redeployMsg)
+	if report != nil {
+		report([]string{redeployMsg})
+	}
 	cmd, composeName := ComposeCommand(ctx, args...)
 	cmd.Dir = workingDir
-	transcript.Addf("Command: %s %s", composeName, strings.Join(args, " "))
-
-	output, err := cmd.CombinedOutput()
-	outputText := strings.TrimSpace(string(output))
-	if outputText != "" {
-		transcript.AddCommandOutput(outputText)
+	cmdMsg := fmt.Sprintf("Command: %s %s", composeName, strings.Join(args, " "))
+	transcript.Add(cmdMsg)
+	if report != nil {
+		report([]string{cmdMsg})
 	}
+
+	err := RunStreamingCommand(cmd, transcript, report)
 	if err != nil {
 		return transcript.Fail("compose up failed: %v", err)
 	}
 	return transcript.Done("Redeploy finished successfully.")
+}
+
+// RunStreamingCommand executes cmd, streaming stdout and stderr line-by-line
+// to the transcript and report callback as lines are emitted.
+func RunStreamingCommand(cmd *exec.Cmd, transcript *logging.Transcript, report func([]string)) error {
+	pr, pw := io.Pipe()
+	cmd.Stdout = pw
+	cmd.Stderr = pw
+
+	done := make(chan struct{})
+	lineChan := make(chan string, 200)
+
+	go func() {
+		defer close(done)
+		var pending []string
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+
+		flush := func() {
+			if len(pending) == 0 {
+				return
+			}
+			batch := pending
+			pending = nil
+			if report != nil {
+				report(batch)
+			}
+		}
+
+		for {
+			select {
+			case line, ok := <-lineChan:
+				if !ok {
+					flush()
+					return
+				}
+				if transcript != nil {
+					transcript.Add(line)
+				}
+				pending = append(pending, line)
+				if len(pending) >= 15 {
+					flush()
+				}
+			case <-ticker.C:
+				flush()
+			}
+		}
+	}()
+
+	go func() {
+		defer close(lineChan)
+		scanner := bufio.NewScanner(pr)
+		buf := make([]byte, 64*1024)
+		scanner.Buffer(buf, 1024*1024)
+		for scanner.Scan() {
+			line := strings.TrimRight(scanner.Text(), "\r")
+			lineChan <- line
+		}
+	}()
+
+	err := cmd.Run()
+	_ = pw.Close()
+	<-done
+	_ = pr.Close()
+	return err
 }
 
 // ComposeLabel reads a single label off a container, returning "" when the
@@ -143,18 +220,34 @@ func splitComposeConfigFiles(raw string) []string {
 // DeployCompose runs the compose file, or a custom command when the project
 // overrides it, and returns the transcript shown in the dashboard.
 func (manager *Manager) DeployCompose(ctx context.Context, composePath string, customCommand string) ([]string, error) {
+	return manager.DeployComposeWithReport(ctx, composePath, customCommand, nil)
+}
+
+// DeployComposeWithReport runs the compose file with live line-by-line streaming.
+func (manager *Manager) DeployComposeWithReport(
+	ctx context.Context,
+	composePath string,
+	customCommand string,
+	report func([]string),
+) ([]string, error) {
 	projectDir := filepath.Dir(composePath)
-	transcript := logging.NewTranscript(fmt.Sprintf("Running deployment in %s...", projectDir))
+	startMsg := fmt.Sprintf("Running deployment in %s...", projectDir)
+	transcript := logging.NewTranscript(startMsg)
+	if report != nil {
+		report([]string{startMsg})
+	}
 
 	cmd, description := DeployCommand(ctx, customCommand, "-f", composePath, "up", "-d")
-	transcript.Addf("Command: %s", description)
+	cmdMsg := fmt.Sprintf("Command: %s", description)
+	transcript.Add(cmdMsg)
+	if report != nil {
+		report([]string{cmdMsg})
+	}
 	cmd.Dir = projectDir
 
-	output, err := cmd.CombinedOutput()
-	outputText := strings.TrimSpace(string(output))
-	transcript.AddCommandOutput(outputText)
+	err := RunStreamingCommand(cmd, transcript, report)
 	if err != nil {
-		return transcript.Fail("compose deployment failed: %v, output: %s", err, outputText)
+		return transcript.Fail("compose deployment failed: %v", err)
 	}
 	return transcript.Done("Deployment finished successfully.")
 }

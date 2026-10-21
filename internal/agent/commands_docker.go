@@ -168,7 +168,15 @@ func (runtime *Runtime) handleDeploy(request commandRequest) ([]string, error) {
 	deployCtx, cancel := request.withTimeout(deployTimeout)
 	defer cancel()
 
-	logs, deployErr := runtime.dockerManager.DeployCompose(deployCtx, composePath, request.command.Command)
+	report := func(lines []string) {
+		runtime.sendProgress(request.conn, protocol.CommandProgress{
+			CommandID: request.command.CommandID,
+			Status:    protocol.StatusRunning,
+			Logs:      lines,
+		})
+	}
+
+	logs, deployErr := runtime.dockerManager.DeployComposeWithReport(deployCtx, composePath, request.command.Command, report)
 	writeDeploymentLog(projectID, request.command.CommandID, logs, deployErr)
 	if deployErr != nil {
 		return logs, deployErr
@@ -192,7 +200,15 @@ func (runtime *Runtime) handleContainerRedeploy(request commandRequest) ([]strin
 	deployCtx, cancel := request.withTimeout(deployTimeout)
 	defer cancel()
 
-	logs, redeployErr := runtime.dockerManager.RedeployContainer(deployCtx, containerID)
+	report := func(lines []string) {
+		runtime.sendProgress(request.conn, protocol.CommandProgress{
+			CommandID: request.command.CommandID,
+			Status:    protocol.StatusRunning,
+			Logs:      lines,
+		})
+	}
+
+	logs, redeployErr := runtime.dockerManager.RedeployContainerWithReport(deployCtx, containerID, report)
 	if redeployErr != nil {
 		return logs, redeployErr
 	}

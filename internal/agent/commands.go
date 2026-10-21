@@ -148,7 +148,14 @@ func (runtime *Runtime) handleTerminal(request commandRequest) ([]string, error)
 }
 
 func (runtime *Runtime) handleGitDeployCommand(request commandRequest) ([]string, error) {
-	logs, err := runtime.handleGitDeploy(request.ctx, request.command)
+	report := func(lines []string) {
+		runtime.sendProgress(request.conn, protocol.CommandProgress{
+			CommandID: request.command.CommandID,
+			Status:    protocol.StatusRunning,
+			Logs:      lines,
+		})
+	}
+	logs, err := runtime.handleGitDeployWithReport(request.ctx, request.command, report)
 	if snapErr := runtime.sendSnapshot(); snapErr != nil && err == nil {
 		err = snapErr
 	}

@@ -32,11 +32,23 @@ const (
 var alternativeComposeFiles = []string{"docker-compose.yaml", "compose.yaml", "compose.yml"}
 
 func (runtime *Runtime) handleGitDeploy(ctx context.Context, cmd protocol.Command) ([]string, error) {
+	return runtime.handleGitDeployWithReport(ctx, cmd, nil)
+}
+
+func (runtime *Runtime) handleGitDeployWithReport(
+	ctx context.Context,
+	cmd protocol.Command,
+	report func([]string),
+) ([]string, error) {
 	if cmd.ProjectID == "" {
 		return nil, errors.New("project_id is required for git_deploy")
 	}
 	transcript := logging.NewTranscript().MirrorTo(runtime.log, gitDeployLogPrefix)
-	transcript.Addf("Starting git_deploy for project %s...", cmd.ProjectID)
+	startMsg := fmt.Sprintf("Starting git_deploy for project %s...", cmd.ProjectID)
+	transcript.Add(startMsg)
+	if report != nil {
+		report([]string{startMsg})
+	}
 
 	deployDir, err := sandbox.ResolvePath(filepath.Join("projects", cmd.ProjectID))
 	if err != nil {
@@ -54,11 +66,20 @@ func (runtime *Runtime) handleGitDeploy(ctx context.Context, cmd protocol.Comman
 		branch = defaultDeployBranch
 	}
 
+	fetchMsg := fmt.Sprintf("Fetching repository %s (%s)...", repoURL, branch)
+	transcript.Add(fetchMsg)
+	if report != nil {
+		report([]string{fetchMsg})
+	}
 	if fetchErr := fetchRepository(ctx, transcript, deployDir, repoURL, branch); fetchErr != nil {
 		return transcript.Lines(), fetchErr
 	}
 	if commitOut, err := exec.CommandContext(ctx, "git", "-C", deployDir, "log", "-1", "--pretty=format:%h - %s").Output(); err == nil && len(commitOut) > 0 {
-		transcript.Addf("Commit: %s", strings.TrimSpace(string(commitOut)))
+		commitMsg := fmt.Sprintf("Commit: %s", strings.TrimSpace(string(commitOut)))
+		transcript.Add(commitMsg)
+		if report != nil {
+			report([]string{commitMsg})
+		}
 	}
 	syncProjectEnvFile(deployDir, cmd.ProjectID, transcript)
 
@@ -75,17 +96,23 @@ func (runtime *Runtime) handleGitDeploy(ctx context.Context, cmd protocol.Comman
 	mirrorStandardComposeFile(deployDir, composePath)
 
 	deployCmd, description := docker.DeployCommand(ctx, cmd.Command, "-f", composePath, "up", "-d", "--build")
-	transcript.Addf("Deploying %s with: %s", composeFile, description)
+	depMsg := fmt.Sprintf("Deploying %s with: %s", composeFile, description)
+	transcript.Add(depMsg)
+	if report != nil {
+		report([]string{depMsg})
+	}
 	deployCmd.Dir = deployDir
 
-	output, deployErr := deployCmd.CombinedOutput()
-	transcript.AddCommandOutput(string(output))
+	deployErr := docker.RunStreamingCommand(deployCmd, transcript, report)
 	if deployErr != nil {
-		wrapped := fmt.Errorf("compose up failed: %v, output: %s", deployErr, string(output))
+		wrapped := fmt.Errorf("compose up failed: %w", deployErr)
 		writeDeploymentLog(cmd.ProjectID, cmd.CommandID, transcript.Lines(), wrapped)
 		return transcript.Lines(), wrapped
 	}
 	logs, _ := transcript.Done("Deployment completed successfully.")
+	if report != nil {
+		report([]string{"Deployment completed successfully."})
+	}
 	writeDeploymentLog(cmd.ProjectID, cmd.CommandID, logs, nil)
 	return logs, nil
 }

@@ -36,6 +36,11 @@ func (transcript *Transcript) add(line string) {
 	}
 }
 
+// Add appends a single line.
+func (transcript *Transcript) Add(line string) {
+	transcript.add(line)
+}
+
 // Addf appends a single formatted line.
 func (transcript *Transcript) Addf(format string, args ...any) {
 	transcript.add(fmt.Sprintf(format, args...))
