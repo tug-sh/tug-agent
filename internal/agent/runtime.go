@@ -14,6 +14,7 @@ import (
 
 	"tug.sh/services/agent/internal/config"
 	"tug.sh/services/agent/internal/docker"
+	"tug.sh/services/agent/internal/importer"
 	"tug.sh/services/agent/internal/lifecycle"
 	"tug.sh/services/agent/internal/logging"
 	"tug.sh/services/agent/internal/outbox"
@@ -34,6 +35,7 @@ type Runtime struct {
 	dockerManager *docker.Manager
 	router        *router.Router
 	updater       *lifecycle.Updater
+	importer      *importer.Manager
 	writeMu       sync.Mutex
 	eventQueue    *outbox.Queue
 	commandInbox  *commandInbox
@@ -58,13 +60,15 @@ func NewRuntime(cfg config.Config) (*Runtime, error) {
 		logger.Warn("cannot load the outbox: %v", err)
 	}
 	dockerManager := docker.NewManager()
+	routerManager := router.New(dockerManager, router.SpecFromConfig(cfg))
 	return &Runtime{
 		config:                  cfg,
 		log:                     logger,
 		fileManager:             sandbox.NewFileManager(),
 		dockerManager:           dockerManager,
-		router:                  router.New(dockerManager, router.SpecFromConfig(cfg)),
+		router:                  routerManager,
 		updater:                 lifecycle.NewUpdater(),
+		importer:                importer.New(dockerManager, routerManager),
 		eventQueue:              queue,
 		commandInbox:            newCommandInbox(commandInboxPath(cfg)),
 		terminals:               make(map[string]*TerminalSession),

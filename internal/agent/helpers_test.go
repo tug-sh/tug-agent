@@ -15,6 +15,7 @@ import (
 	"tug.sh/pkg/protocol"
 	"tug.sh/services/agent/internal/config"
 	"tug.sh/services/agent/internal/docker"
+	"tug.sh/services/agent/internal/importer"
 	"tug.sh/services/agent/internal/logging"
 	"tug.sh/services/agent/internal/outbox"
 )
@@ -72,6 +73,7 @@ func waitForEnvelope(t *testing.T, frames <-chan protocol.Envelope) protocol.Env
 func newTestRuntime(t *testing.T) *Runtime {
 	t.Helper()
 	stateDir := t.TempDir()
+	dockerManager := docker.NewManager()
 
 	return &Runtime{
 		config: config.Config{
@@ -79,7 +81,8 @@ func newTestRuntime(t *testing.T) *Runtime {
 			AgentToken: "token-test",
 		},
 		log:                     logging.New(logging.LevelError),
-		dockerManager:           docker.NewManager(),
+		dockerManager:           dockerManager,
+		importer:                importer.New(dockerManager, nil),
 		eventQueue:              outbox.NewQueue(filepath.Join(stateDir, "queue.json")),
 		commandInbox:            newCommandInbox(filepath.Join(stateDir, "inbox.json")),
 		terminals:               make(map[string]*TerminalSession),

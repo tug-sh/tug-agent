@@ -123,6 +123,8 @@ var commandHandlers = map[string]commandHandler{
 	protocol.CmdDeleteFirewallRule:     (*Runtime).handleDeleteFirewallRule,
 	protocol.CmdCheckFail2ban:          (*Runtime).handleCheckFail2ban,
 	protocol.CmdInstallFail2ban:        (*Runtime).handleInstallFail2ban,
+	protocol.CmdImportScan:             (*Runtime).handleImportScan,
+	protocol.CmdImportApply:            (*Runtime).handleImportApply,
 }
 
 func (runtime *Runtime) executeCommand(
